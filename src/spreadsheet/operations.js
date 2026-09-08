@@ -1,3 +1,4 @@
+import { openApplications } from './applications.js';
 import { migrateJobTabs, openJobTabs } from './job-tabs.js';
 import {
   SEARCH_HEADERS,
@@ -13,6 +14,7 @@ import { locked } from '../platform/runtime.js';
 export function setup(log = () => {}) {
   return locked(() => {
     const book = spreadsheet();
+    openApplications(book);
     migrateJobTabs(book, JOB_TAB_TYPES, log);
     book.setSpreadsheetTimeZone('Asia/Manila');
     for (const [name, headers] of [
@@ -59,7 +61,7 @@ export function setup(log = () => {}) {
     // Menu creation belongs to the spreadsheet's onOpen trigger, not editor setup.
 
     book.toast(
-      'Resume searches ready for all employment types. Jobs 14 days old are removed on refresh. Run now to verify open jobs.',
+      'Resume searches ready for all employment types. Unapplied jobs 14 days old are removed on refresh; Applications are kept permanently. Run now to verify open jobs.',
       'Tracker ready',
       10,
     );

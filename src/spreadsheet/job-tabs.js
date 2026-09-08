@@ -176,7 +176,7 @@ function sameRow(left, right) {
   return rowDifferences(left, right).length === 0;
 }
 
-function appendRows(tab, additions, headers) {
+export function appendRows(tab, additions, headers, statuses) {
   if (!additions.length) return;
   const width = Math.max(JOB_HEADERS.length, ...additions.map((row) => row.length));
   if (tab.getMaxColumns() < width)
@@ -194,7 +194,7 @@ function appendRows(tab, additions, headers) {
   const start = tab.getLastRow() + 1;
   if (start + additions.length - 1 > tab.getMaxRows())
     tab.insertRowsAfter(tab.getMaxRows(), start + additions.length - 1 - tab.getMaxRows());
-  formatJobs(tab);
+  formatJobs(tab, statuses);
   tab
     .getRange(start, 1, additions.length, width)
     .setValues(

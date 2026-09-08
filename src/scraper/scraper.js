@@ -1,3 +1,4 @@
+import { openApplications, applicationRows, moveApplications } from '../spreadsheet/applications.js';
 import { openJobTabs, readJobTabs, saveJobTabs } from '../spreadsheet/job-tabs.js';
 import {
   SEARCH_HEADERS,
@@ -29,6 +30,7 @@ export function runScraper(log = () => {}) {
     () => {
       const started = new Date();
       let result;
+      let moved = 0;
       let checked = 0;
       let added = 0,
         updated = 0,
@@ -37,6 +39,9 @@ export function runScraper(log = () => {}) {
       let errorText = '';
       try {
         const tables = openJobTabs(book, JOB_TAB_TYPES);
+        const applications = openApplications(book);
+        moved = moveApplications(tables, applications, log);
+        const applicationIds = new Set(applicationRows(applications).map(row => String(row[0])));
         const beforeCleanup = readJobTabs(tables);
         for (const { tab } of tables) {
           removed += removeExpiredJobs(tab, rows(tab, JOB_HEADERS.length), started.getTime());
@@ -72,7 +77,7 @@ export function runScraper(log = () => {}) {
         } else {
           const io = createIo(log);
           result = collect(searches, io, started.getTime());
-          const { candidates, recent } = prepareCandidates(remaining, result.jobs, Date.now());
+          const { candidates, recent } = prepareCandidates(remaining, result.jobs.filter(job => !applicationIds.has(String(job.id))), Date.now());
           log('candidates.prepared', {
             discovered: result.jobs.length,
             recent: recent.length,
@@ -96,6 +101,7 @@ export function runScraper(log = () => {}) {
           errorText = result.errors.join('\n');
         }
       } catch (error) {
+        moved = error.moved ?? moved;
         errorText = error.message;
         log('scraper.failed', { error: errorText }, 'error');
       }
@@ -109,6 +115,7 @@ export function runScraper(log = () => {}) {
           added,
           updated,
           removed,
+          moved,
           errors: errorText ? errorText.split('\n') : [],
         },
         outcome === 'Failed' ? 'error' : outcome === 'Success' ? 'info' : 'warn',
@@ -125,11 +132,11 @@ export function runScraper(log = () => {}) {
         removed,
       ]);
       book.toast(
-        `${outcome}: ${added} added, ${updated} updated, ${removed} expired rows removed. ${errorText ? 'See Runs for details.' : ''}`,
+        `${outcome}: ${added} added, ${updated} updated, ${moved} moved to Applications, ${removed} expired rows removed. ${errorText ? 'See Runs for details.' : ''}`,
         'Job Tracker',
         8,
       );
-      return { outcome, added, updated, removed, error: errorText };
+      return { outcome, added, updated, removed, moved, error: errorText };
     },
     () => {
       log('scraper.skipped', { reason: 'Another tracker operation is running.' }, 'warn');

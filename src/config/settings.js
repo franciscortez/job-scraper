@@ -32,6 +32,7 @@ export const RUN_HEADERS = [
   'Error',
   'Removed (14 days old)',
 ];
+export const APPLICATION_STATUSES = ['Applied', 'Interviewing', 'Accepted', 'Rejected', 'Withdrawn'];
 export const STATUSES = ['New', 'Saved', 'Applied', 'Interviewing', 'Rejected', 'Archived'];
 export const TYPES = ['All', 'Full Time', 'Part Time', 'Gig'];
 export const DEFAULT_SEARCHES = [

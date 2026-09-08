@@ -22,6 +22,7 @@ class Tab {
     for (const row of this.data) row.splice(destination > range.column ? destination - 2 : destination - 1, 0, ...row.splice(range.column - 1, 1));
   }
   setFrozenRows() {}
+  setRowHeightsForced() {}
   setColumnWidth() {}
   getFilter() { return this.filter; }
   appendRow(row) { this.data.push(row); }
@@ -59,7 +60,7 @@ class Tab {
       },
       createFilter() { tab.filter = { remove: () => { tab.filter = null; }, getRange: () => ({ getNumColumns: () => width }), setColumnFilterCriteria: () => {} }; return range; },
     };
-    for (const method of ['setFontWeight', 'setBackground', 'setDataValidation', 'setNumberFormat', 'setWrap']) range[method] = () => range;
+    for (const method of ['setFontWeight', 'setBackground', 'setDataValidation', 'setNumberFormat', 'setWrap', 'setWrapStrategy', 'setVerticalAlignment', 'setBackgrounds']) range[method] = () => range;
     return range;
   }
 }
@@ -74,7 +75,7 @@ beforeEach(() => {
   };
   held = false; releases = 0; fetches = 0; onFetch = () => {};
   triggers = [];
-  globalThis.SpreadsheetApp = { getActiveSpreadsheet: () => book, getUi: fluent, newDataValidation: fluent, newFilterCriteria: fluent, flush() {} };
+  globalThis.SpreadsheetApp = { WrapStrategy: { CLIP: 'CLIP' }, getActiveSpreadsheet: () => book, getUi: fluent, newDataValidation: fluent, newFilterCriteria: fluent, flush() {} };
   const properties = new Map();
   globalThis.PropertiesService = { getDocumentProperties: () => ({ getProperty: key => properties.get(key), setProperty: (key, value) => properties.set(key, value), deleteProperty: key => properties.delete(key) }) };
   globalThis.LockService = { getScriptLock: () => ({ tryLock: () => !held, releaseLock: () => { releases++; } }) };
@@ -100,7 +101,7 @@ function configure() { setup(); book.getSheetByName('Searches').data = [book.get
 test('setup and scraping work without a spreadsheet UI context', () => {
   globalThis.SpreadsheetApp.getUi = () => { throw new Error('Cannot call SpreadsheetApp.getUi() from this context.'); };
   configure();
-  assert.equal(book.tabs.size, 6);
+  assert.equal(book.tabs.size, 7);
   assert.equal(runScraper().outcome, 'Success');
   assert.doesNotThrow(enableHourlyRefresh);
   assert.doesNotThrow(disableHourlyRefresh);
@@ -110,7 +111,7 @@ test('setup repeats without overwriting searches or job tracking', () => {
   configure(); runScraper();
   book.getSheetByName('Part Time').data[1][11] = 'Applied';
   setup();
-  assert.equal(book.tabs.size, 6);
+  assert.equal(book.tabs.size, 7);
   assert.deepEqual(book.getSheetByName('Searches').data[1], [true, 'developer', 'Part Time', 1]);
   assert.equal(book.getSheetByName('Part Time').data[1][11], 'Applied');
 });
@@ -119,13 +120,13 @@ test('manual repeat updates without duplicates and never rewrites existing track
   configure();
   assert.equal(runScraper().added, 2);
   const jobs = book.getSheetByName('Part Time');
-  jobs.data[1][11] = 'Applied'; jobs.data[1][12] = 'Call Friday';
+  jobs.data[1][11] = 'Saved'; jobs.data[1][12] = 'Call Friday';
   jobs.writes = [];
   onFetch = () => { jobs.data[1][12] = 'Edited while fetching'; };
   const result = runScraper();
   assert.equal(result.added, 0); assert.equal(result.updated, 2);
   assert.equal(jobs.data.length, 3);
-  assert.deepEqual([jobs.data[1][11], jobs.data[1][12]], ['Applied', 'Edited while fetching']);
+  assert.deepEqual([jobs.data[1][11], jobs.data[1][12]], ['Saved', 'Edited while fetching']);
   assert.ok(jobs.writes.every(write => write.column === 14 || write.column === 1 && write.width === 11));
   assert.equal(jobs.data[1][13], 'Open');
   assert.equal(book.getSheetByName('Runs').data.at(-1)[6], 'Success');
@@ -201,10 +202,10 @@ test('keyword migration clears n8n and GoHighLevel searches while preserving oth
   assert.deepEqual(searches.data[4], [true, 'React', 'Part Time', 1]);
 });
 
-test('expired rows including tracking are deleted even with searches disabled', () => {
+test('expired unapplied rows including tracking are deleted even with searches disabled', () => {
   configure(); runScraper();
   const jobs = book.getSheetByName('Part Time');
-  jobs.data[1][5] = '2020-01-01 00:00:00'; jobs.data[1][11] = 'Applied'; jobs.data[1][12] = 'Old note';
+  jobs.data[1][5] = '2020-01-01 00:00:00'; jobs.data[1][11] = 'Saved'; jobs.data[1][12] = 'Old note';
   const keptId = jobs.data[2][0];
   book.getSheetByName('Searches').data[1][0] = false;
   const result = runScraper();
@@ -301,12 +302,12 @@ test('description-only matches enter Jobs and score sorting keeps notes and cust
   assert.equal(runScraper().added, 2);
   const jobs = book.getSheetByName('Gig');
   const target = jobs.data.find(row => row[0] === '12345');
-  target[11] = 'Applied'; target[12] = 'Keep note'; target[19] = 'Custom extra';
+  target[11] = 'Saved'; target[12] = 'Keep note'; target[19] = 'Custom extra';
   boosted = true; assert.equal(runScraper().added, 0);
   assert.equal(jobs.data[1][0], '12345');
   assert.ok(jobs.data[1][16] > jobs.data[2][16]);
   assert.match(jobs.data[1][18], /Supabase: Description/);
-  assert.equal(jobs.data[1][11], 'Applied'); assert.equal(jobs.data[1][12], 'Keep note'); assert.equal(jobs.data[1][19], 'Custom extra');
+  assert.equal(jobs.data[1][11], 'Saved'); assert.equal(jobs.data[1][12], 'Keep note'); assert.equal(jobs.data[1][19], 'Custom extra');
 });
 
 test('JSON progress records share execution ID and match persisted totals', t => {
@@ -436,7 +437,7 @@ test('verified employment change moves one job with tracking and custom data', t
   const source = book.tabs.get('Part Time');
   source.data[0][19] = 'Custom';
   const tracked = source.data.find(row => row[0] === '12345');
-  tracked[11] = 'Applied'; tracked[12] = 'Keep note'; tracked[19] = 'Extra';
+  tracked[11] = 'Saved'; tracked[12] = 'Keep note'; tracked[19] = 'Extra';
   const originalFetch = UrlFetchApp.fetch;
   UrlFetchApp.fetch = (url, options) => {
     const response = originalFetch(url, options);
@@ -445,7 +446,7 @@ test('verified employment change moves one job with tracking and custom data', t
   assert.equal(runScraper().outcome, 'Success');
   assert.ok(!source.data.slice(1).some(row => row[0] === '12345'));
   const moved = book.tabs.get('Full Time').data[1];
-  assert.equal(moved[0], '12345'); assert.equal(moved[11], 'Applied'); assert.equal(moved[12], 'Keep note'); assert.equal(moved[19], 'Extra');
+  assert.equal(moved[0], '12345'); assert.equal(moved[11], 'Saved'); assert.equal(moved[12], 'Keep note'); assert.equal(moved[19], 'Extra');
   assert.equal(runScraper().added, 0);
   assert.equal(book.tabs.get('Full Time').getLastRow(), 2);
 });
@@ -476,4 +477,123 @@ test('rollback restores partially moved Status and shows all original columns', 
   assert.deepEqual(tab.data, original);
   assert.deepEqual(tab.visible, [1, 19]);
   setup(); assert.deepEqual(tab.data, original);
+});
+
+test('Applied jobs transfer before expiry, stay permanent, and are never rediscovered or cleared', async () => {
+  configure(); runScraper();
+  const jobs = book.getSheetByName('Part Time');
+  const original = jobs.data[1].slice();
+  const ids = [];
+  for (const [index, name] of ['Part Time', 'Full Time', 'Gig', 'Any'].entries()) {
+    const tab = book.getSheetByName(name);
+    const row = original.slice();
+    row[0] = index ? String(90000 + index) : original[0]; ids.push(String(row[0]));
+    row[4] = name; row[5] = '2020-01-01 00:00:00'; row[11] = 'Applied'; row[12] = 'Follow up'; row[19] = 'Custom value';
+    tab.data[0][19] = 'Custom';
+    if (index === 0) tab.data[1] = row; else tab.data.push(row);
+  }
+  const result = runScraper();
+  assert.equal(result.moved, 4); assert.equal(result.removed, 0); assert.equal(result.added, 0);
+  const apps = book.getSheetByName('Applications');
+  assert.equal(apps.data.length, 5); assert.equal(apps.filter, null);
+  for (const row of apps.data.slice(1)) {
+    assert.equal(row[11], 'Applied'); assert.equal(row[12], 'Follow up'); assert.equal(row[19], 'Custom value');
+  }
+  const { APPLICATION_STATUSES } = await import('../src/config/settings.js');
+  for (const status of APPLICATION_STATUSES) {
+    apps.data[1][11] = status;
+    onFetch = () => { assert.equal(apps.data[1][11], status); };
+    assert.equal(runScraper().moved, 0);
+    assert.equal(apps.data[1][11], status);
+    for (const name of ['Part Time', 'Full Time', 'Gig', 'Any'])
+      assert.ok(book.getSheetByName(name).data.slice(1).every(row => !ids.includes(String(row[0]))));
+  }
+  const { clearJobs } = await import('../src/app.js');
+  clearJobs(); assert.equal(apps.data.length, 5);
+});
+
+test('transfer runs with disabled searches and before network failure; first refresh creates tab', () => {
+  configure(); runScraper();
+  book.deleteSheet(book.getSheetByName('Applications'));
+  const jobs = book.getSheetByName('Part Time'); jobs.data[1][11] = 'Applied';
+  book.getSheetByName('Searches').data[1][0] = false;
+  assert.equal(runScraper().moved, 1);
+  jobs.data[1][11] = 'Applied';
+  book.getSheetByName('Searches').data[1][0] = true;
+  onFetch = () => { throw new Error('Offline'); };
+  assert.equal(runScraper().moved, 1);
+  assert.equal(book.getSheetByName('Applications').data.length, 3);
+});
+
+test('interrupted transfer retries matching copy without duplicates; conflicts preserve both rows', () => {
+  configure(); runScraper();
+  const jobs = book.getSheetByName('Part Time'); jobs.data[1][11] = 'Applied';
+  const remove = jobs.deleteRows;
+  jobs.deleteRows = () => { throw new Error('Delete interrupted'); };
+  assert.equal(runScraper().outcome, 'Failed');
+  const apps = book.getSheetByName('Applications'); assert.equal(apps.data.length, 2);
+  apps.data[1][12] = 'Changed destination';
+  jobs.deleteRows = remove;
+  assert.match(runScraper().error, /conflict/);
+  assert.equal(jobs.data.length, 3);
+  apps.data[1][12] = jobs.data[1][12];
+  assert.equal(runScraper().moved, 1);
+  assert.equal(apps.data.length, 2);
+});
+
+test('failed copy verification and concurrent source edits never delete source', () => {
+  configure(); runScraper();
+  const jobs = book.getSheetByName('Part Time'); jobs.data[1][11] = 'Applied';
+  const apps = book.getSheetByName('Applications');
+  let changed = false;
+  SpreadsheetApp.flush = () => {
+    if (apps.data.length > 1 && !changed) { jobs.data[1][12] = 'Concurrent edit'; changed = true; }
+  };
+  assert.match(runScraper().error, /changed during transfer/);
+  assert.equal(jobs.data[1][12], 'Concurrent edit'); assert.equal(jobs.data.length, 3);
+  apps.data[1][12] = jobs.data[1][12];
+  assert.equal(runScraper().moved, 1);
+});
+
+test('late Applied edits survive expiry scan and transfer next run', async () => {
+  configure(); runScraper();
+  const jobs = book.getSheetByName('Part Time'); jobs.data[1][5] = '2020-01-01 00:00:00';
+  const snapshot = jobs.data.slice(1).map(row => row.slice());
+  jobs.data[1][11] = 'Applied';
+  const { removeExpiredJobs } = await import('../src/spreadsheet/sheets.js');
+  assert.equal(removeExpiredJobs(jobs, snapshot, Date.now()), 0);
+  assert.equal(runScraper().moved, 1);
+});
+
+test('unrelated Applications content blocks refresh before cleanup', () => {
+  configure(); runScraper();
+  const jobs = book.getSheetByName('Part Time'); jobs.data[1][5] = '2020-01-01 00:00:00';
+  const apps = book.getSheetByName('Applications'); apps.data = [['Personal notes']];
+  assert.match(runScraper().error, /unrelated content/);
+  assert.deepEqual(apps.data, [['Personal notes']]); assert.equal(jobs.data.length, 3);
+});
+
+test('destination write failure retains source and retry succeeds', () => {
+  configure(); runScraper();
+  const jobs = book.getSheetByName('Part Time'); jobs.data[1][11] = 'Applied';
+  const apps = book.getSheetByName('Applications');
+  const getRange = apps.getRange;
+  apps.getRange = function(row, column, count, width) {
+    const range = getRange.call(this, row, column, count, width);
+    if (row > 1 && width >= 19) range.setValues = () => { throw new Error('Write failed'); };
+    return range;
+  };
+  assert.match(runScraper().error, /Write failed/);
+  assert.equal(jobs.data.length, 3); assert.equal(apps.data.length, 1);
+  apps.getRange = getRange;
+  assert.equal(runScraper().moved, 1);
+});
+
+test('verification mismatch retains source', () => {
+  configure(); runScraper();
+  const jobs = book.getSheetByName('Part Time'); jobs.data[1][11] = 'Applied';
+  const apps = book.getSheetByName('Applications');
+  SpreadsheetApp.flush = () => { if (apps.data.length > 1) apps.data[1][12] = 'Corrupted copy'; };
+  assert.match(runScraper().error, /Could not verify/);
+  assert.equal(jobs.data.length, 3);
 });

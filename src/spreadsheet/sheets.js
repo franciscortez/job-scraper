@@ -1,5 +1,5 @@
 import { restoreJobColumns } from './restore-columns.js';
-import { JOB_HEADERS, STATUSES, JOB_COLUMN, JOB_INDEX } from '../config/settings.js';
+import { JOB_HEADERS, STATUSES, APPLICATION_STATUSES, JOB_COLUMN, JOB_INDEX } from '../config/settings.js';
 import { cell, expiredRow } from '../jobs/job-rows.js';
 export function spreadsheet() {
   const book = SpreadsheetApp.getActiveSpreadsheet();
@@ -54,7 +54,7 @@ export function showOpenJobs(tab) {
     );
 }
 
-export function formatJobs(tab) {
+export function formatJobs(tab, statuses = STATUSES) {
   wrapText(tab, JOB_HEADERS.length);
   tab.showColumns(1, JOB_HEADERS.length);
   const count = tab.getMaxRows() - 1;
@@ -70,10 +70,32 @@ export function formatJobs(tab) {
     .getRange(2, JOB_COLUMN['Status'], count, 1)
     .setDataValidation(
       SpreadsheetApp.newDataValidation()
-        .requireValueInList(STATUSES, true)
+        .requireValueInList(statuses, true)
         .setAllowInvalid(false)
         .build(),
     );
+  if (statuses === APPLICATION_STATUSES) formatApplicationLayout(tab);
+}
+
+function formatApplicationLayout(tab) {
+  const count = tab.getMaxRows() - 1;
+  const width = Math.max(JOB_HEADERS.length, tab.getLastColumn());
+  tab.getRange(2, 1, count, width)
+    .setWrapStrategy(SpreadsheetApp.WrapStrategy.CLIP)
+    .setVerticalAlignment('top');
+  tab.setRowHeightsForced(2, count, 60);
+  tab.setRowHeightsForced(1, 1, 44);
+  tab.getRange(1, 1, 1, width).setWrap(true).setVerticalAlignment('middle');
+  JOB_HEADERS.forEach((name, index) => {
+    const pixels = ['Title', 'Description Snippet', 'Notes'].includes(name) ? 300
+      : ['URL', 'Skills', 'Matched Skills', 'Match Reason', 'Match Location'].includes(name) ? 220
+      : ['Posted Date Text', 'First Seen', 'Last Seen', 'Last Checked'].includes(name) ? 180
+      : 140;
+    tab.setColumnWidth(index + 1, pixels);
+  });
+  tab.getRange(2, 1, count, width).setBackgrounds(
+    Array.from({ length: count }, (_, index) => Array(width).fill(index % 2 ? '#f3f6fa' : '#ffffff')),
+  );
 }
 
 export function rows(tab, width) {
@@ -87,13 +109,12 @@ export function logRun(tab, values) {
 
 export function removeExpiredJobs(jobs, beforeCleanup, now) {
   let removed = 0;
-  // Delete bottom-up so entire rows, including their tracking cells, move together.
+  // Re-read each row so an Applied edit after the initial scan survives cleanup.
   for (let i = beforeCleanup.length - 1; i >= 0; i--) {
-    if (!expiredRow(beforeCleanup[i], now)) continue;
-    const end = i;
-    while (i > 0 && expiredRow(beforeCleanup[i - 1], now)) i--;
-    jobs.deleteRows(i + 2, end - i + 1);
-    removed += end - i + 1;
+    const current = jobs.getRange(i + 2, 1, 1, JOB_HEADERS.length).getValues()[0];
+    if (current[JOB_INDEX['Status']] === 'Applied' || !expiredRow(current, now)) continue;
+    jobs.deleteRows(i + 2, 1);
+    removed++;
   }
   if (jobs.getMaxRows() < 2) jobs.insertRowsAfter(1, 1);
   return removed;

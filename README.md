@@ -21,10 +21,10 @@ Every time it runs, it:
 4. Adds new open jobs to your sheet.
 5. Updates jobs it already knows about.
 6. Hides jobs that closed, do not fit, or could not be checked.
-7. Deletes jobs that are 14 days old or older.
+7. Moves Applied jobs to Applications, then deletes unapplied discovery jobs that are 14 days old or older.
 8. Writes a short report about what it did.
 
-You never lose your own tracking. Anything you type in the Status and Notes columns stays there until the whole row gets deleted for being too old.
+Status and Notes are preserved during refresh. Applied jobs move to Applications and stay permanently; other discovery rows are deleted when they expire.
 
 ## The three pages in your spreadsheet
 
@@ -40,7 +40,7 @@ To use it daily:
 2. Use the **Job Tracker** menu at the top.
 3. Click **Run now** when you want fresh jobs.
 4. Read the employment-type tabs. Only open jobs are shown at first.
-5. For jobs you like, change **Status** to Saved, Applied, Interviewing, and write anything in **Notes**.
+5. For jobs you like, use **Saved** and add **Notes**. After applying, choose **Applied**; the next hourly or manual refresh moves the row to **Applications**.
 6. Turn on **Enable hourly refresh** if you want it to check by itself. Turn it off with **Disable hourly refresh**.
 
 That is all most people need.
@@ -68,9 +68,9 @@ These are the rules the helper always follows.
 | What “Open” means | It means the public job page was still there, still had an apply button, and had no closed message the last time it was checked. It cannot promise the employer is still hiring. |
 | How many jobs it checks per run | At most 50 job pages per run. This keeps it fast and safe. If there is more to check, the next run continues where it left off. |
 | What “Limited” means | Limited is normal. It only means there were more than 50 jobs to check, so some are waiting for the next run. |
-| How old jobs can get | 14 days. After that the whole row is deleted, including Status and Notes. This happens during a run, not at the exact birthday minute. |
+| How old jobs can get | 14 days for unapplied discovery jobs. Applications are kept permanently. Expired discovery rows are deleted, including Status and Notes. This happens during a run, not at the exact birthday minute. |
 | Old jobs coming back | Very old jobs are not added again. If an employer reposts the same job with a fresh date, it can appear again as new. |
-| Your Status and Notes | Never overwritten by the helper. Only you change them, and they disappear only when the old row itself is deleted. |
+| Your Status and Notes | Never overwritten by the helper. Only you change them. Applications retain them permanently; expired discovery rows lose them when deleted. |
 | Duplicates | The same job never appears twice, even if it shows up in several searches or pages. |
 | Best matches first | The strongest skill matches float to the top of the list, so you see the most promising jobs first. |
 | Salary and dates | Copied exactly as written on the job site. Nothing is converted or guessed. Missing details stay blank. |
@@ -85,7 +85,7 @@ These are the rules the helper always follows.
 - It will not apply to jobs for you.
 - It will not message employers.
 - It will not guarantee a job is still available.
-- It will not keep jobs forever. Old jobs go away after 14 days.
+- Unapplied discovery jobs go away after 14 days. Applications remain until you manually delete them.
 - It will not fix renamed headers by itself. Keep the header row as it is.
 - It will not send your name, contact details, or work history to the job site. It only reads public job pages.
 
@@ -107,7 +107,7 @@ The scraper now logs structured JSON for each stage, checked job, retry, and fin
 
 Claude Code and other preferred tools count only for eligible development roles. Content-creation titles such as YouTube automation, video editing, and scriptwriting are excluded. Generic AI or workflow titles need programming responsibilities in their summary or description. Software development involving the YouTube API remains eligible.
 
-To clear existing results, select `clearJobs` in the Apps Script editor and run it. This clears all data below the headers in Part Time, Full Time, Gig, and Any, including hidden rows, Status, Notes, and custom columns. Searches and Runs remain intact. The reset also clears rotation cursors; it does not fetch jobs. Run `runScraper` afterward to refill results with the current filters.
+To clear existing results, select `clearJobs` in the Apps Script editor and run it. This clears all data below the headers in Part Time, Full Time, Gig, and Any, including hidden rows, Status, Notes, and custom columns. Applications, Searches, and Runs remain intact. The reset also clears rotation cursors; it does not fetch jobs. Run `runScraper` afterward to refill results with the current filters.
 
 ### Employment-type tabs
 
@@ -118,3 +118,13 @@ Run `setup` once after this update. It migrates existing Jobs records (including
 The cap is **50 unique job checks total per run across all tabs**, not 50 per tab or 50 new matches. Search requests and retries are additional. The four-minute budget can stop a run before 50 checks.
 
 Hourly runs are supported but setup does not enable them. Run `enableHourlyRefresh` once to schedule hourly checks for your account. Existing hourly triggers remain active. Confirm scheduled runs in Runs or Apps Script Executions; the CLI has not verified the live trigger.
+
+### Application tracking
+
+**Applications** is created by setup or the first refresh after deployment. Mark a row **Applied** in an employment tab to move it there on the next hourly refresh (when enabled), or run `runScraper` manually. Transfers happen before cleanup and fetching, even when searches are disabled or the source is unavailable.
+
+Applications supports **Applied**, **Interviewing**, **Accepted**, **Rejected**, and **Withdrawn**. Change these statuses manually in Applications; rows stay there regardless of status or availability. All application history is exempt from the 14-day cleanup and `clearJobs`. Application IDs are excluded from discovery additions and availability checks. No application date is added automatically.
+
+Transfers preserve job details, Notes, and custom column values. Destination copies are verified before source rows are deleted. If a transfer is interrupted, a later run can finish an identical copy without duplication. Conflicting copies or edits during transfer stop the run and retain the source; reconcile the rows before retrying. Unrelated content in an existing Applications tab is never overwritten. Refresh summaries and execution logs report moved counts; errors also appear in Runs.
+
+Applications uses 60-pixel data rows, clipped text, top alignment, wider text columns, and alternating row colors. Setup and refresh reapply this layout, including to newly transferred rows. Select a cell to read its complete text in the formula bar.
