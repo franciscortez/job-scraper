@@ -21,10 +21,10 @@ Every time it runs, it:
 4. Adds new open jobs to your sheet.
 5. Updates jobs it already knows about.
 6. Hides jobs that closed, do not fit, or could not be checked.
-7. Moves Applied jobs to Applications, then deletes unapplied discovery jobs that are 14 days old or older.
+7. Moves Applied jobs to Applications, then deletes unapplied discovery jobs that are 14 days old or older, plus Applications rows still stuck on Applied 14 days after transfer.
 8. Writes a short report about what it did.
 
-Status and Notes are preserved during refresh. Applied jobs move to Applications and stay permanently; other discovery rows are deleted when they expire.
+Status and Notes are preserved during refresh. Applied jobs move to Applications; rows still on Applied 14 days after transfer are deleted, other outcomes (Interviewing, Accepted, Rejected, Withdrawn) stay permanently. Other discovery rows are deleted when they expire.
 
 ## The three pages in your spreadsheet
 
@@ -40,7 +40,7 @@ To use it daily:
 2. Use the **Job Tracker** menu at the top.
 3. Click **Run now** when you want fresh jobs.
 4. Read the employment-type tabs. Only open jobs are shown at first.
-5. For jobs you like, use **Saved** and add **Notes**. After applying, choose **Applied**; the next hourly or manual refresh moves the row to **Applications**.
+5. For jobs you like, use **Saved** and add **Notes**. After applying, choose **Applied**; the next hourly or manual refresh moves the row to **Applications** and stamps Last Seen as arrival time. Rows still on **Applied** 14 days later are deleted on refresh; change the status to Interviewing or beyond to keep them.
 6. Turn on **Enable hourly refresh** if you want it to check by itself. Turn it off with **Disable hourly refresh**.
 
 That is all most people need.
@@ -68,9 +68,9 @@ These are the rules the helper always follows.
 | What “Open” means | It means the public job page was still there, still had an apply button, and had no closed message the last time it was checked. It cannot promise the employer is still hiring. |
 | How many jobs it checks per run | At most 50 job pages per run. This keeps it fast and safe. If there is more to check, the next run continues where it left off. |
 | What “Limited” means | Limited is normal. It only means there were more than 50 jobs to check, so some are waiting for the next run. |
-| How old jobs can get | 14 days for unapplied discovery jobs. Applications are kept permanently. Expired discovery rows are deleted, including Status and Notes. This happens during a run, not at the exact birthday minute. |
+| How old jobs can get | 14 days for unapplied discovery jobs, and 14 days in Applications for rows still on Applied (clock starts at transfer, within about an hour of marking Applied when hourly refresh is on). Other application outcomes are kept permanently. Expired rows are deleted on refresh, including Status and Notes, not at the exact birthday minute. |
 | Old jobs coming back | Very old jobs are not added again. If an employer reposts the same job with a fresh date, it can appear again as new. |
-| Your Status and Notes | Never overwritten by the helper. Only you change them. Applications retain them permanently; expired discovery rows lose them when deleted. |
+| Your Status and Notes | Never overwritten by the helper. Only you change them. Progressed applications retain them permanently; stale Applied rows and expired discovery rows lose them when deleted. |
 | Duplicates | The same job never appears twice, even if it shows up in several searches or pages. |
 | Best matches first | The strongest skill matches float to the top of the list, so you see the most promising jobs first. |
 | Salary and dates | Copied exactly as written on the job site. Nothing is converted or guessed. Missing details stay blank. |
@@ -85,14 +85,14 @@ These are the rules the helper always follows.
 - It will not apply to jobs for you.
 - It will not message employers.
 - It will not guarantee a job is still available.
-- Unapplied discovery jobs go away after 14 days. Applications remain until you manually delete them.
+- Unapplied discovery jobs go away after 14 days. Applications rows stuck on Applied go away 14 days after transfer; Interviewing and beyond remain until you manually delete them.
 - It will not fix renamed headers by itself. Keep the header row as it is.
 - It will not send your name, contact details, or work history to the job site. It only reads public job pages.
 
 ## If something looks wrong
 
 1. Open the **Runs** page and read the newest line from right to left: result, error, numbers.
-2. If your Status or Notes look odd, check whether the row just got deleted for being 14 days old.
+2. If your Status or Notes look odd, check whether the row just expired (14-day discovery rule, or stale Applied in Applications).
 3. If no new jobs appear, check the **Searches** page: at least one row needs to be turned on and have words in it.
 4. If the sheet says headers changed, put the header names back in the original order.
 5. For setup problems, error messages, and all technical commands, see `SETUP.md`.
@@ -123,7 +123,7 @@ Hourly runs are supported but setup does not enable them. Run `enableHourlyRefre
 
 **Applications** is created by setup or the first refresh after deployment. Mark a row **Applied** in an employment tab to move it there on the next hourly refresh (when enabled), or run `runScraper` manually. Transfers happen before cleanup and fetching, even when searches are disabled or the source is unavailable.
 
-Applications supports **Applied**, **Interviewing**, **Accepted**, **Rejected**, and **Withdrawn**. Change these statuses manually in Applications; rows stay there regardless of status or availability. All application history is exempt from the 14-day cleanup and `clearJobs`. Application IDs are excluded from discovery additions and availability checks. No application date is added automatically.
+Applications supports **Applied**, **Interviewing**, **Accepted**, **Rejected**, and **Withdrawn**. Change these statuses manually in Applications; progressed rows stay regardless of status or availability. Only rows still on **Applied** 14 days after transfer (Last Seen) expire; all other application history is exempt from cleanup and `clearJobs`. Application IDs are excluded from discovery additions and availability checks. No application date is added automatically.
 
 Transfers preserve job details, Notes, and custom column values. Destination copies are verified before source rows are deleted. If a transfer is interrupted, a later run can finish an identical copy without duplication. Conflicting copies or edits during transfer stop the run and retain the source; reconcile the rows before retrying. Unrelated content in an existing Applications tab is never overwritten. Refresh summaries and execution logs report moved counts; errors also appear in Runs.
 

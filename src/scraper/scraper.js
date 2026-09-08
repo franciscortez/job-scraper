@@ -18,6 +18,7 @@ import {
   showOpenJobs,
   logRun,
   removeExpiredJobs,
+  removeExpiredApplications,
 } from '../spreadsheet/sheets.js';
 import { applyProfile } from '../spreadsheet/profile.js';
 import { locked, createIo } from '../platform/runtime.js';
@@ -46,7 +47,13 @@ export function runScraper(log = () => {}) {
         for (const { tab } of tables) {
           removed += removeExpiredJobs(tab, rows(tab, JOB_HEADERS.length), started.getTime());
         }
-        log('cleanup.completed', { removed, existing: beforeCleanup.length });
+        const applicationsRemoved = removeExpiredApplications(
+          applications,
+          applicationRows(applications),
+          started.getTime(),
+        );
+        removed += applicationsRemoved;
+        log('cleanup.completed', { removed, existing: beforeCleanup.length, applicationsRemoved });
         const remaining = readJobTabs(tables).map((entry) => entry.row);
         for (const { tab } of tables) {
           const count = Math.max(0, tab.getLastRow() - 1);

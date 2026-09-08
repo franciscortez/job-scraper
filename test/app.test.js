@@ -597,3 +597,54 @@ test('verification mismatch retains source', () => {
   assert.match(runScraper().error, /Could not verify/);
   assert.equal(jobs.data.length, 3);
 });
+
+test('transfer stamps Last Seen as arrival time starting stale-Applied clock', () => {
+  configure(); runScraper();
+  const before = Date.now();
+  const jobs = book.getSheetByName('Part Time'); jobs.data[1][11] = 'Applied';
+  assert.equal(runScraper().moved, 1);
+  const apps = book.getSheetByName('Applications');
+  const stamped = apps.data[1][10];
+  assert.ok(stamped instanceof Date);
+  assert.ok(stamped.getTime() >= before - 1000 && stamped.getTime() <= Date.now() + 1000);
+});
+
+test('stale Applied rows expire after 14 days in Applications; other outcomes stay', async () => {
+  configure(); runScraper();
+  const jobs = book.getSheetByName('Part Time'); jobs.data[1][11] = 'Applied';
+  assert.equal(runScraper().moved, 1);
+  const apps = book.getSheetByName('Applications');
+  const old = new Date(Date.now() - 14 * 24 * 3600000 - 1000);
+  apps.data[1][10] = old;
+  apps.data[1][11] = 'Applied';
+  book.getSheetByName('Searches').data[1][0] = false;
+  const result = runScraper();
+  assert.equal(result.removed, 1);
+  assert.equal(apps.data.length, 1);
+  assert.equal(book.getSheetByName('Runs').data.at(-1)[8], 1);
+  const { APPLICATION_STATUSES } = await import('../src/config/settings.js');
+  const kept = APPLICATION_STATUSES.filter(value => value !== 'Applied');
+  kept.forEach((status, index) => {
+    const fresh = [String(77101 + index), 'Old job', 'https://example.com', '', 'Part Time', '2020-01-01 00:00:00', '', '', '', new Date(0), old, status, '', 'Open', new Date(0), '', 0, '', ''];
+    apps.data.push(fresh);
+  });
+  assert.equal(runScraper().removed, 0);
+  assert.equal(apps.data.length, 5);
+});
+
+test('fresh Applied rows survive Applications cleanup; late status change survives scan', async () => {
+  configure(); runScraper();
+  const jobs = book.getSheetByName('Part Time'); jobs.data[1][11] = 'Applied';
+  assert.equal(runScraper().moved, 1);
+  const apps = book.getSheetByName('Applications');
+  book.getSheetByName('Searches').data[1][0] = false;
+  assert.equal(runScraper().removed, 0);
+  assert.equal(apps.data.length, 2);
+  const { removeExpiredApplications } = await import('../src/spreadsheet/sheets.js');
+  const { rows } = await import('../src/spreadsheet/sheets.js');
+  apps.data[1][10] = new Date(Date.now() - 14 * 24 * 3600000 - 1000);
+  const snapshot = rows(apps, apps.data[0].length).map(row => row.slice());
+  apps.data[1][11] = 'Interviewing';
+  assert.equal(removeExpiredApplications(apps, snapshot, Date.now()), 0);
+  assert.equal(apps.data.length, 2);
+});

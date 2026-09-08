@@ -89,27 +89,28 @@ Menu functions exposed as globals by `scripts/build.mjs`:
 ### 4.2 Runtime flow in `runScraper`
 
 1. Acquire script lock via `LockService.getScriptLock().tryLock(1000)`. On contention, log a Skipped row and return. This blocks concurrent manual and timed runs.
-2. Validate IDs across all employment tabs with `mergeJobs(beforeCleanup, [], started)`. Missing or duplicate numeric IDs throw before any network call.
-3. Delete expired rows bottom-up with `expiredRow(row, now)`. Counts removals for the **Runs** `Removed (14 days old)` column. Cleanup runs even with searches disabled or later fetch failure.
-4. Reset surviving rows column N Availability to `Unknown` so stale Open state cannot pass as current. Re-apply the Open-only filter.
-5. Run `applyProfile` migration, then `readSearches` to validate enabled searches, then `selectSearches(searches, secondarySearchCursor)` to pick at most 5 searches for this run: preferred-skill searches first up to 4, plus rotated secondary searches. This rotates through large search lists across runs.
-6. If no valid searches, log Skipped and stop without fetching.
-7. `collect(searches, io, start)`:
+2. Open employment tabs and Applications. `moveApplications` transfers Applied rows first, stamping Last Seen with the transfer time. Retry after an interrupted delete resumes when the only difference is the stamped Last Seen; any other difference is a conflict and aborts.
+3. Validate IDs across all employment tabs with `mergeJobs(beforeCleanup, [], started)`. Missing or duplicate numeric IDs throw before any network call.
+4. Delete expired rows bottom-up with `expiredRow(row, now)`, then stale-Applied rows with `expiredApplication(row, now)` (re-reading each row so a concurrent status edit survives). Counts both removals for the **Runs** `Removed (14 days old)` column. Cleanup runs even with searches disabled or later fetch failure.
+5. Reset surviving rows column N Availability to `Unknown` so stale Open state cannot pass as current. Re-apply the Open-only filter.
+6. Run `applyProfile` migration, then `readSearches` to validate enabled searches, then `selectSearches(searches, secondarySearchCursor)` to pick at most 5 searches for this run: preferred-skill searches first up to 4, plus rotated secondary searches. This rotates through large search lists across runs.
+7. If no valid searches, log Skipped and stop without fetching.
+8. `collect(searches, io, start)`:
    - Builds search URLs with `searchUrl`. Type All requests `gig=on&partTime=on&fullTime=on`. Other types request one flag.
    - Validates pagination URLs with `safeSearchUrl`. Only `https://www.onlinejobs.ph/jobseekers/jobsearch` with optional page and query is allowed.
    - Sleeps at least 1000 ms between attempts, retries HTTP 5xx twice, stops whole run on HTTP 401, 403, 429 or access challenge. Does not follow redirects. Enforces shared 240000 ms budget.
    - Parses cards with class `jobpost-cat-box` via `parsePage`. Requires job ID from `/jobseekers/job/<slug>-<id>` and non-empty title. Throws on changed markup unless body shows explicit `Displaying 0 out of 0 job`. Merges overlapping results across searches with accumulated `matches` labels.
-8. Build candidate map from surviving sheet rows plus fresh `recent` results. `recent` filter requires valid Manila `postedTime`, not future, age less than `RETENTION_MS`. Relevance and skill checks happen later in `inspectJob` and `rankMatch`. New rows with missing, invalid, future, or already-expired dates are never inserted.
-9. `verifyJobs(candidates, io, start, { preferred: preferredJobCursor, secondary: secondaryJobCursor })` unless collection set `stop`, in which case verification is skipped:
+9. Build candidate map from surviving sheet rows plus fresh `recent` results. `recent` filter requires valid Manila `postedTime`, not future, age less than `RETENTION_MS`. Relevance and skill checks happen later in `inspectJob` and `rankMatch`. New rows with missing, invalid, future, or already-expired dates are never inserted.
+10. `verifyJobs(candidates, io, start, { preferred: preferredJobCursor, secondary: secondaryJobCursor })` unless collection set `stop`, in which case verification is skipped:
    - Deduplicates by ID, sorts descending numeric ID for stable cursor rotation.
    - Splits preferred candidates, those matching `PREFERRED_SKILLS` (`Next.js`, `Codex`, `Claude Code`, `Supabase`), from secondary. Preferred get priority: `min(preferred.length, 38 + max(0, 12 - secondary.length))`, total capped at `MAX_JOB_CHECKS_PER_RUN = 50`.
    - Fetches each detail URL validated by `safeJobUrl`. Same sleep, retry, block-stop, and 4-minute budget rules as collection.
    - `inspectJob` returns Closed on HTTP 404 or 410, or on closed/filled/expired/no-longer-available wording in title, headings, alerts, or description. Throws on access challenge, identity mismatch (`h1.job__title[data-jobid]` and `#job-description[data-jobid]` must equal job ID), missing detail markup, or missing application control (`Please login or register as jobseeker to apply for this job.` or `Apply now` / `Apply for this job`). Otherwise requires type in `Full Time`, `Part Time`, `Gig`, `Any` and at least one resume skill from `rankMatch`. Success returns Open plus title, type, skills, score, reason, location.
    - Failures become Unknown, never Open. Errors accumulate. `stop` errors break the batch. Returns `limited: true` when candidates exceed the 50 selected checks.
-10. Keep only `recent` jobs whose verification state is Open, using verified title and type.
-11. Re-read all employment tabs after network work so edits made during fetching survive. Call `mergeJobs(existing, accepted, now)`. Preserve First Seen, Status, Notes. Accumulate Matched Searches historically. Then overwrite Availability, Last Checked, Matched Skills, Match Score, Match Reason, Match Location from verification results.
-12. Expand sheet capacity if needed, write existing rows columns A–K only so Status and Notes cells are never rewritten, append new rows full-width, write columns N–S Availability, Last Checked, Matched Skills, Match Score, Match Reason, Match Location, re-apply number format on Match Score, sort used rows by Match Score descending then Posted Date descending then Job ID descending with tracking columns attached, re-apply Open filter, flush.
-13. Persist `preferredJobCursor` and `secondaryJobCursor` from `verification.cursors`, persist `secondarySearchCursor` from `selection.cursor` when collection did not stop. Set outcome: Failed on throw or zero pages with partial errors, Partial when errors exist but some pages succeeded, Limited when clean but candidates remain, Success otherwise. Append **Runs** row with start, duration, searches processed, pages fetched, added, updated, result, error text, removed. Toast summary.
+11. Keep only `recent` jobs whose verification state is Open, using verified title and type.
+12. Re-read all employment tabs after network work so edits made during fetching survive. Call `mergeJobs(existing, accepted, now)`. Preserve First Seen, Status, Notes. Accumulate Matched Searches historically. Then overwrite Availability, Last Checked, Matched Skills, Match Score, Match Reason, Match Location from verification results.
+13. Expand sheet capacity if needed, write existing rows columns A–K only so Status and Notes cells are never rewritten, append new rows full-width, write columns N–S Availability, Last Checked, Matched Skills, Match Score, Match Reason, Match Location, re-apply number format on Match Score, sort used rows by Match Score descending then Posted Date descending then Job ID descending with tracking columns attached, re-apply Open filter, flush.
+14. Persist `preferredJobCursor` and `secondaryJobCursor` from `verification.cursors`, persist `secondarySearchCursor` from `selection.cursor` when collection did not stop. Set outcome: Failed on throw or zero pages with partial errors, Partial when errors exist but some pages succeeded, Limited when clean but candidates remain, Success otherwise. Append **Runs** row with start, duration, searches processed, pages fetched, added, updated, result, error text, removed. Toast summary.
 
 ### 4.3 Matching and scoring
 
@@ -143,7 +144,9 @@ Menu functions exposed as globals by `scripts/build.mjs`:
 - `RETENTION_MS = 14 * 24 * 60 * 60 * 1000`.
 - `postedTime(text)` accepts only `YYYY-MM-DD HH:MM:SS`, interprets it as Asia/Manila `+08:00`, rejects impossible dates and non-round-tripping values.
 - `expiredRow(row, now)`: prefers posted timestamp column F, falls back to First Seen column J when posted is unreadable, only for existing rows. If both unknown, returns false and keeps row hidden rather than guessing age.
+- `expiredApplication(row, now)`: only when Status is `Applied`. Clock is Last Seen (stamped with transfer time on `moveApplications`), falling back to First Seen for rows transferred before stamping. Posted date is never used here so an old posting applied today gets a full 14 days. Other statuses never expire.
 - Expiration condition is `now - date >= RETENTION_MS`. Deletion happens during refresh, not by timer. Enable hourly refresh for automatic cleanup.
+- Run order per refresh: transfer Applied rows first (stamping Last Seen), then discovery expiry, then stale-Applied expiry. Both expiry counts sum into the Runs `Removed` column; `cleanup.completed` logs `applicationsRemoved` separately. First refresh after deploy may delete pre-existing Applied rows older than 14 days; rescue by moving them to Interviewing or beyond before running.
 
 ### 4.7 Triggers, timezone, and safety limits
 
@@ -162,13 +165,13 @@ npm run build
 npm run check
 ```
 
-- `npm test` covers parser fixtures, settings validation, deduplication, tracking preservation, safe text, pagination, retries, access blocks, time budgets, resume matching, employment types, closure signals, exact 14-day cutoff, schema migration, repeat setup, trigger management, and Sheet service interactions.
-- Local tests mock Google services. Before relying on automation, verify in the real spreadsheet: manual run, repeat run with no duplicates, edited Status and Notes survive, scheduled run fires, expired rows delete, Runs logs Success or expected Limited or Partial.
+- `npm test` covers parser fixtures, settings validation, deduplication, tracking preservation, safe text, pagination, retries, access blocks, time budgets, resume matching, employment types, closure signals, exact 14-day cutoff, stale-Applied expiry, schema migration, repeat setup, trigger management, and Sheet service interactions.
+- Local tests mock Google services. Before relying on automation, verify in the real spreadsheet: manual run, repeat run with no duplicates, edited Status and Notes survive, scheduled run fires, expired discovery rows delete, stale Applied rows delete after 14 days while Interviewing and beyond stay, Runs logs Success or expected Limited or Partial.
 - The refactor passes 60 tests, including JSON record validation, shared execution IDs, progress totals, retries, source failures, and logging failures. Existing tests cover nine defaults, version-4 migration, search rotation, and sorting with custom columns. The build also verifies all six entrypoints in a clean VM. This does not replace a live Apps Script execution check.
 
 ## 6. Troubleshooting
 
-- Check **Runs** first. Error column holds joined search, fetch, verification, and budget messages. Removed column holds expired-row count.
+- Check **Runs** first. Error column holds joined search, fetch, verification, and budget messages. Removed column holds discovery plus stale-Applied expired-row count.
 - `Another tracker operation is running`: lock contention. Wait and retry. Contended runs log Skipped without fetching.
 - `Missing <name> tab. Run setup first.`: run `setup` from Apps Script editor.
 - `<name> headers changed. Restore original header order.`: restore exact header names and order. Setup does not silently repair renamed headers.

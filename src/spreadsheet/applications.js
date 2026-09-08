@@ -33,21 +33,28 @@ export function applicationRows(tab) {
 export function moveApplications(tables, destination, log = () => {}) {
   const sources = readJobTabs(tables);
   const existing = new Map(applicationRows(destination).map(row => [String(row[0]), row]));
+  // Single transfer timestamp per run: Last Seen in Applications marks arrival time
+  // and starts the 14-day stale-Applied clock.
+  const transferredAt = new Date();
   let moved = 0;
   for (const source of sources) {
     const id = String(source.row[0]);
     const applied = source.row[JOB_INDEX['Status']] === 'Applied';
     if (!applied && !existing.has(id)) continue;
     try {
-      if (!applied || (existing.has(id) && rowDifferences(existing.get(id), source.row).length))
+      const destinationRow = source.row.slice();
+      destinationRow[JOB_INDEX['Last Seen']] = transferredAt;
+      const prior = existing.get(id);
+      if (!applied || (prior && !isResumableTransfer(prior, source.row)))
         throw new Error(`Application conflict for job ${id}. Both rows retained.`);
-      if (!existing.has(id)) {
+      if (!prior) {
         const headers = source.tab.getRange(1, 1, 1, source.row.length).getValues()[0];
-        appendRows(destination, [source.row], headers, APPLICATION_STATUSES);
+        appendRows(destination, [destinationRow], headers, APPLICATION_STATUSES);
         SpreadsheetApp.flush();
       }
+      const expected = prior || destinationRow;
       const copied = applicationRows(destination).find(row => String(row[0]) === id);
-      if (rowDifferences(copied, source.row).length)
+      if (rowDifferences(copied, expected).length)
         throw new Error(`Could not verify application ${id}. Source retained.`);
       const latest = rows(source.tab, Math.max(JOB_HEADERS.length, source.tab.getLastColumn()));
       const index = latest.findIndex(row => String(row[0]) === id);
@@ -66,4 +73,17 @@ export function moveApplications(tables, destination, log = () => {}) {
   }
   log('applications.transferred', { moved });
   return moved;
+}
+
+// A retry after an interrupted delete finds the stamped copy (Last Seen =
+// transfer time) while the source still holds the pre-transfer Last Seen.
+// That single-column difference resumes safely; anything else is a conflict.
+function isResumableTransfer(prior, source) {
+  const differences = rowDifferences(prior, source);
+  if (!differences.length) return true;
+  return (
+    differences.length === 1 &&
+    differences[0].column === 'Last Seen' &&
+    prior[JOB_INDEX['Last Seen']] instanceof Date
+  );
 }

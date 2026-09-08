@@ -1,6 +1,6 @@
 import { restoreJobColumns } from './restore-columns.js';
 import { JOB_HEADERS, STATUSES, APPLICATION_STATUSES, JOB_COLUMN, JOB_INDEX } from '../config/settings.js';
-import { cell, expiredRow } from '../jobs/job-rows.js';
+import { cell, expiredRow, expiredApplication } from '../jobs/job-rows.js';
 export function spreadsheet() {
   const book = SpreadsheetApp.getActiveSpreadsheet();
   if (!book) throw new Error('Use this script bound to the job tracker spreadsheet.');
@@ -117,6 +117,19 @@ export function removeExpiredJobs(jobs, beforeCleanup, now) {
     removed++;
   }
   if (jobs.getMaxRows() < 2) jobs.insertRowsAfter(1, 1);
+  return removed;
+}
+
+export function removeExpiredApplications(tab, beforeCleanup, now) {
+  let removed = 0;
+  // Re-read each row so a status change away from Applied during the run survives cleanup.
+  for (let i = beforeCleanup.length - 1; i >= 0; i--) {
+    const current = tab.getRange(i + 2, 1, 1, JOB_HEADERS.length).getValues()[0];
+    if (!expiredApplication(current, now)) continue;
+    tab.deleteRows(i + 2, 1);
+    removed++;
+  }
+  if (tab.getMaxRows() < 2) tab.insertRowsAfter(1, 1);
   return removed;
 }
 

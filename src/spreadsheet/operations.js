@@ -61,7 +61,7 @@ export function setup(log = () => {}) {
     // Menu creation belongs to the spreadsheet's onOpen trigger, not editor setup.
 
     book.toast(
-      'Resume searches ready for all employment types. Unapplied jobs 14 days old are removed on refresh; Applications are kept permanently. Run now to verify open jobs.',
+      'Resume searches ready for all employment types. Unapplied jobs 14 days old are removed on refresh; stale Applied rows 14 days after transfer are also removed, other application outcomes kept. Run now to verify open jobs.',
       'Tracker ready',
       10,
     );
