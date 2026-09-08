@@ -2,6 +2,7 @@ import { test, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { setup, runScraper, enableHourlyRefresh, disableHourlyRefresh } from '../src/app.js';
+import { readJobRecords } from '../src/spreadsheet/job-records.js';
 
 const today = new Date(Date.now() + 8 * 3600000).toISOString().slice(0, 10);
 const fixture = readFileSync(new URL('./fixtures/search.html', import.meta.url), 'utf8').replaceAll('2026-09-08', today).replaceAll('10:09:25', '00:00:00').replaceAll('09:00:00', '00:00:00').replace('>Assistant <', '>Backend Developer <');
@@ -9,6 +10,7 @@ let book, triggers, held, releases, fetches, onFetch;
 const fluent = () => new Proxy({}, { get: () => () => fluent() });
 class Tab {
   constructor(name) { this.name = name; this.data = []; this.maxRows = 1000; this.filter = null; this.writes = []; }
+  getName() { return this.name; }
   getSheetId() { return this.name.split('').reduce((value, letter) => value * 31 + letter.charCodeAt(0), 0); }
   getLastRow() { let end = this.data.length; while (end && !this.data[end - 1].some(value => value !== '' && value != null)) end--; return end; }
   getMaxRows() { return this.maxRows; }
@@ -33,6 +35,7 @@ class Tab {
       clearDataValidations() { return range; },
       getDataValidations() { return Array.from({length: count}, () => [{ getCriteriaValues: () => [['Not Applied', 'Applied']] }]); },
       setFormula(formula) { return range.setValues([[formula]]); },
+      getFormulas() { return Array.from({ length: count }, () => Array(width).fill('')); },
       getValues() { return Array.from({ length: count }, (_, i) => Array.from({ length: width }, (_, j) => tab.data[row - 1 + i]?.[column - 1 + j] ?? '')); },
       setValues(values) {
         assert.equal(values.length, count);
@@ -558,7 +561,7 @@ test('failed copy verification and concurrent source edits never delete source',
 test('late Applied edits survive expiry scan and transfer next run', async () => {
   configure(); runScraper();
   const jobs = book.getSheetByName('Part Time'); jobs.data[1][5] = '2020-01-01 00:00:00';
-  const snapshot = jobs.data.slice(1).map(row => row.slice());
+  const snapshot = readJobRecords(jobs);
   jobs.data[1][11] = 'Applied';
   const { removeExpiredJobs } = await import('../src/spreadsheet/sheets.js');
   assert.equal(removeExpiredJobs(jobs, snapshot, Date.now()), 0);
@@ -641,10 +644,252 @@ test('fresh Applied rows survive Applications cleanup; late status change surviv
   assert.equal(runScraper().removed, 0);
   assert.equal(apps.data.length, 2);
   const { removeExpiredApplications } = await import('../src/spreadsheet/sheets.js');
-  const { rows } = await import('../src/spreadsheet/sheets.js');
   apps.data[1][10] = new Date(Date.now() - 14 * 24 * 3600000 - 1000);
-  const snapshot = rows(apps, apps.data[0].length).map(row => row.slice());
+  const snapshot = readJobRecords(apps);
   apps.data[1][11] = 'Interviewing';
   assert.equal(removeExpiredApplications(apps, snapshot, Date.now()), 0);
   assert.equal(apps.data.length, 2);
+});
+
+// Blank rows must remain empty; logical record positions are not sheet positions.
+const blankJobRow = () => Array(20).fill('');
+function trackedRows(tab) {
+  return new Map(readJobRecords(tab).map(({ row }) => [String(row[0]), [row[11], row[12], row[19] ?? '']]));
+}
+
+test('hidden row 6 and consecutive leading gaps survive refresh without detaching tracking', t => {
+  t.mock.method(console, 'log', () => {});
+  configure(); runScraper();
+  const jobs = book.tabs.get('Part Time');
+  jobs.data[0][19] = 'Custom';
+  const originals = jobs.data.slice(1);
+  originals.forEach((row, index) => { row[11] = 'Saved'; row[12] = `Note ${index}`; row[19] = `Extra ${index}`; });
+  jobs.data = [jobs.data[0], blankJobRow(), blankJobRow(), originals[0], blankJobRow(), blankJobRow(), originals[1]];
+  jobs.hiddenRows = [6]; // Read APIs include filtered/hidden rows, just as Sheets does.
+  const expected = trackedRows(jobs);
+  const capacity = jobs.getMaxRows();
+  jobs.writes = [];
+  assert.equal(runScraper().outcome, 'Success');
+  assert.deepEqual(trackedRows(jobs), expected);
+  assert.equal(jobs.getMaxRows(), capacity, 'No blank rows deleted');
+  assert.equal(jobs.data.slice(1).filter(row => row.every(value => value === '')).length, 4);
+  assert.ok(jobs.writes.every(write => write.column === 14 || write.column === 1 && write.width === 11));
+  assert.equal(runScraper().outcome, 'Success', 'Next refresh must not find fabricated Unknown-only rows');
+});
+
+test('new jobs append beyond sparse records and extend sheet capacity safely', t => {
+  t.mock.method(console, 'log', () => {});
+  configure(); runScraper();
+  const jobs = book.tabs.get('Part Time');
+  const kept = jobs.data[1]; kept[11] = 'Saved'; kept[12] = 'Keep attached';
+  jobs.data = [jobs.data[0], blankJobRow(), blankJobRow(), kept];
+  jobs.maxRows = 4;
+  jobs.writes = [];
+  const result = runScraper();
+  assert.equal(result.added, 1);
+  assert.equal(result.updated, 1);
+  assert.ok(jobs.writes.some(write => write.row === 5 && write.width === 19));
+  assert.equal(jobs.getMaxRows(), 5);
+  assert.equal(trackedRows(jobs).get(String(kept[0]))[1], 'Keep attached');
+  assert.equal(readJobRecords(jobs).length, 2);
+});
+
+test('gap inserted during fetching is reread before updates', t => {
+  t.mock.method(console, 'log', () => {});
+  configure(); runScraper();
+  const jobs = book.tabs.get('Part Time'); jobs.data[0][19] = 'Custom';
+  jobs.data[2][11] = 'Saved'; jobs.data[2][12] = 'Before'; jobs.data[2][19] = 'Extra';
+  const id = String(jobs.data[2][0]);
+  let changed = false;
+  onFetch = () => {
+    if (changed) return;
+    changed = true;
+    jobs.data.splice(1, 0, blankJobRow());
+    jobs.data.find(row => String(row[0]) === id)[12] = 'Edited during fetch';
+  };
+  assert.equal(runScraper().outcome, 'Success');
+  assert.deepEqual(trackedRows(jobs).get(id), ['Saved', 'Edited during fetch', 'Extra']);
+  assert.equal(readJobRecords(jobs).length, 2);
+});
+
+for (const [label, column, value] of [['Notes-only', 12, 'Private note'], ['custom-only', 19, 'Private custom'], ['whitespace', 0, ' '], ['invalid ID', 0, 'secret-invalid-value'], ['zero custom value', 19, 0]]) {
+  test(`${label} row still fails at exact cell without leaking contents`, t => {
+    const logs = []; t.mock.method(console, 'log', line => logs.push(line));
+    configure(); runScraper();
+    const jobs = book.tabs.get('Part Time');
+    const bad = blankJobRow(); bad[column] = value;
+    jobs.data.splice(1, 0, blankJobRow(), bad);
+    const before = fetches;
+    const result = runScraper();
+    assert.equal(result.outcome, 'Failed'); assert.equal(fetches, before);
+    assert.match(result.error, /^Part Time!A3: (missing|invalid) Job ID/);
+    assert.equal(book.tabs.get('Runs').data.at(-1)[7], result.error);
+    assert.ok(logs.some(line => line.includes('scraper.failed') && line.includes('Part Time!A3')));
+    assert.ok(!logs.join('').includes('Private'));
+    assert.ok(!logs.join('').includes('secret-invalid-value'));
+  });
+}
+
+for (const name of ['Part Time', 'Applications']) {
+  test(`formula returning empty string in ${name} is not an empty row`, t => {
+    t.mock.method(console, 'log', () => {});
+    configure();
+    const tab = book.tabs.get(name);
+    tab.data.push(blankJobRow());
+    const getRange = tab.getRange;
+    tab.getLastRow = () => 2; // Sheets counts the formula even when its result is empty.
+    tab.getRange = function(row, column, count, width) {
+      const range = getRange.call(this, row, column, count, width);
+      const formulas = range.getFormulas;
+      range.getFormulas = () => {
+        const values = formulas();
+        if (row === 2 && column === 1 && width >= 20) values[0][19] = '=""';
+        return values;
+      };
+      return range;
+    };
+    const result = runScraper();
+    assert.equal(result.outcome, 'Failed'); assert.equal(fetches, 0);
+    assert.equal(result.error, `${name}!A2: missing Job ID on a non-empty row.`);
+  });
+}
+
+test('duplicates report physical locations across discovery tabs and within Applications', t => {
+  t.mock.method(console, 'log', () => {});
+  configure(); runScraper();
+  const source = book.tabs.get('Part Time'); const copy = source.data[1].slice();
+  const gig = book.tabs.get('Gig'); gig.data.push(blankJobRow(), copy);
+  const before = fetches;
+  assert.equal(runScraper().error, `Duplicate Job ID ${copy[0]}: Part Time!A2 and Gig!A3.`);
+  assert.equal(fetches, before);
+  gig.data = [gig.data[0]];
+  const apps = book.tabs.get('Applications'); apps.data.push(blankJobRow(), copy, blankJobRow(), copy.slice());
+  assert.equal(runScraper().error, `Duplicate Job ID ${copy[0]}: Applications!A3 and Applications!A5.`);
+  assert.equal(fetches, before);
+});
+
+test('sparse Applications transfers resume after interruption and preserve other rows', t => {
+  t.mock.method(console, 'log', () => {});
+  configure(); runScraper();
+  const jobs = book.tabs.get('Part Time');
+  jobs.data[0][19] = 'Custom';
+  jobs.data.slice(1).forEach((row, i) => { row[11] = 'Applied'; row[12] = `Applied ${i}`; row[19] = `Extra ${i}`; });
+  jobs.data.splice(1, 0, blankJobRow()); jobs.data.splice(3, 0, blankJobRow());
+  const expected = trackedRows(jobs);
+  const apps = book.tabs.get('Applications'); apps.data.push(blankJobRow());
+  const remove = jobs.deleteRows;
+  jobs.deleteRows = () => { throw new Error('Interrupted'); };
+  assert.match(runScraper().error, /Interrupted/);
+  apps.data.splice(1, 0, blankJobRow());
+  jobs.deleteRows = remove;
+  assert.equal(runScraper().moved, 2);
+  assert.deepEqual(trackedRows(apps), expected);
+  assert.equal(readJobRecords(jobs).length, 0);
+  assert.equal(runScraper().moved, 0);
+});
+
+test('expiry deletes only expired physical rows across gaps and refresh saves shifted survivors', t => {
+  t.mock.method(console, 'log', () => {});
+  configure(); runScraper();
+  const jobs = book.tabs.get('Part Time');
+  const kept = jobs.data[1]; kept[11] = 'Saved'; kept[12] = 'Survivor';
+  const old = jobs.data[2].slice(); old[0] = '70001'; old[5] = '2020-01-01 00:00:00';
+  const otherOld = old.slice(); otherOld[0] = '70002';
+  jobs.data = [jobs.data[0], blankJobRow(), old, blankJobRow(), otherOld, blankJobRow(), kept];
+  const apps = book.tabs.get('Applications');
+  const stale = old.slice(); stale[0] = '80001'; stale[10] = new Date(0); stale[11] = 'Applied';
+  const progressed = stale.slice(); progressed[0] = '80002'; progressed[11] = 'Interviewing'; progressed[12] = 'Keep application';
+  apps.data.push(blankJobRow(), stale, blankJobRow(), progressed);
+  const result = runScraper();
+  assert.equal(result.outcome, 'Success'); assert.equal(result.removed, 3);
+  assert.equal(trackedRows(jobs).get(String(kept[0]))[1], 'Survivor');
+  assert.ok(!trackedRows(jobs).has('70001')); assert.ok(!trackedRows(jobs).has('70002'));
+  assert.deepEqual([...trackedRows(apps)], [['80002', ['Interviewing', 'Keep application', '']]]);
+});
+
+test('employment type moves after gaps retain tracking and custom values', t => {
+  t.mock.method(console, 'log', () => {});
+  configure(); runScraper();
+  const source = book.tabs.get('Part Time'); source.data[0][19] = 'Custom';
+  source.data.slice(1).forEach((row, i) => { row[11] = 'Saved'; row[12] = `Note ${i}`; row[19] = `Extra ${i}`; });
+  source.data.splice(1, 0, blankJobRow()); source.data.splice(3, 0, blankJobRow());
+  const expected = trackedRows(source);
+  const destination = book.tabs.get('Full Time'); destination.data.push(blankJobRow());
+  const originalFetch = UrlFetchApp.fetch;
+  UrlFetchApp.fetch = (url, options) => {
+    const response = originalFetch(url, options);
+    return { ...response, getContentText: () => response.getContentText().replace('<p>Part Time</p>', '<p>Full Time</p>') };
+  };
+  assert.equal(runScraper().outcome, 'Success');
+  assert.equal(readJobRecords(source).length, 0);
+  assert.deepEqual(trackedRows(destination), expected);
+  assert.equal(runScraper().added, 0);
+});
+
+test('setup and legacy migration tolerate gaps and retry existing copies', async t => {
+  t.mock.method(console, 'log', () => {});
+  const { JOB_HEADERS } = await import('../src/config/settings.js');
+  const legacy = book.insertSheet('Jobs');
+  const row = blankJobRow(); row[0] = '90001'; row[4] = 'Part Time'; row[11] = 'Saved'; row[12] = 'Legacy note'; row[19] = 'Custom value';
+  legacy.data = [[...JOB_HEADERS, 'Custom'], blankJobRow(), row, blankJobRow()];
+  const remove = book.deleteSheet;
+  book.deleteSheet = () => { throw new Error('Interrupted migration'); };
+  assert.throws(setup, /Interrupted migration/);
+  const target = book.tabs.get('Part Time'); target.data.splice(1, 0, blankJobRow(), blankJobRow());
+  book.deleteSheet = remove;
+  setup();
+  assert.equal(book.getSheetByName('Jobs'), undefined);
+  assert.deepEqual(trackedRows(target).get('90001'), ['Saved', 'Legacy note', 'Custom value']);
+  assert.equal(readJobRecords(target)[0].rowNumber, 4);
+  const before = target.data.map(row => row.slice());
+  setup(); assert.deepEqual(target.data, before);
+});
+
+test('employment moves reread source positions after a gap is inserted during copy verification', t => {
+  t.mock.method(console, 'log', () => {});
+  configure(); runScraper();
+  const source = book.tabs.get('Part Time');
+  const expected = trackedRows(source);
+  const destination = book.tabs.get('Full Time');
+  const originalFetch = UrlFetchApp.fetch;
+  UrlFetchApp.fetch = (url, options) => {
+    const response = originalFetch(url, options);
+    return { ...response, getContentText: () => response.getContentText().replace('<p>Part Time</p>', '<p>Full Time</p>') };
+  };
+  let inserted = false;
+  SpreadsheetApp.flush = () => {
+    if (!inserted && destination.getLastRow() > 1) {
+      source.data.splice(1, 0, blankJobRow());
+      inserted = true;
+    }
+  };
+  assert.equal(runScraper().outcome, 'Success');
+  assert.ok(inserted);
+  assert.equal(readJobRecords(source).length, 0);
+  assert.deepEqual(trackedRows(destination), expected);
+});
+
+test('cleanup rejects stale physical positions instead of deleting a different job', async t => {
+  t.mock.method(console, 'log', () => {});
+  configure(); runScraper();
+  const jobs = book.tabs.get('Part Time');
+  jobs.data[1][5] = '2020-01-01 00:00:00';
+  const before = trackedRows(jobs);
+  const snapshot = readJobRecords(jobs);
+  jobs.data.splice(1, 0, blankJobRow());
+  const { removeExpiredJobs } = await import('../src/spreadsheet/sheets.js');
+  assert.throws(() => removeExpiredJobs(jobs, snapshot, Date.now()), /job changed during cleanup/);
+  assert.deepEqual(trackedRows(jobs), before);
+});
+
+test('skipped refresh never fills blank rows with availability values', t => {
+  t.mock.method(console, 'log', () => {});
+  configure(); runScraper();
+  const jobs = book.tabs.get('Part Time');
+  jobs.data.splice(1, 0, blankJobRow(), blankJobRow());
+  book.tabs.get('Searches').data[1][0] = false;
+  assert.equal(runScraper().outcome, 'Skipped');
+  assert.ok(jobs.data[1].every(value => value === ''));
+  assert.ok(jobs.data[2].every(value => value === ''));
+  assert.equal(runScraper().outcome, 'Skipped');
 });

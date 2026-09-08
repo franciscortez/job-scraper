@@ -74,7 +74,7 @@ These are the rules the helper always follows.
 | Duplicates | The same job never appears twice, even if it shows up in several searches or pages. |
 | Best matches first | The strongest skill matches float to the top of the list, so you see the most promising jobs first. |
 | Salary and dates | Copied exactly as written on the job site. Nothing is converted or guessed. Missing details stay blank. |
-| Sorting and editing | Sort whole rows together, never one column alone. Do not change the top header row or the Job ID column. Do not sort while a run is happening. |
+| Sorting and editing | Sort whole rows together, never one column alone. Completely empty rows are skipped during refresh; sorting may move them. Rows with Notes, custom data, or formulas still need a valid Job ID. Do not change the top header row or the Job ID column. Do not sort while a run is happening. |
 | One run at a time | If one run is already working, another one waits. This protects your sheet from mixed-up rows. |
 | Hourly checking | Hourly means about once an hour, not exactly on the hour. Google decides the exact minute. |
 | When the job site blocks access | The run stops safely, keeps your old jobs, and writes what happened in the Runs page. It does not try to sneak around blocks. |
@@ -95,7 +95,8 @@ These are the rules the helper always follows.
 2. If your Status or Notes look odd, check whether the row just expired (14-day discovery rule, or stale Applied in Applications).
 3. If no new jobs appear, check the **Searches** page: at least one row needs to be turned on and have words in it.
 4. If the sheet says headers changed, put the header names back in the original order.
-5. For setup problems, error messages, and all technical commands, see `SETUP.md`.
+5. If an ID error appears, use the tab and cell locations in Runs to find the affected records. Missing or invalid IDs on non-empty rows and duplicate IDs still stop refresh. Completely empty rows do not.
+6. For setup problems, error messages, and all technical commands, see `SETUP.md`.
 
 
 ### JSON progress logs

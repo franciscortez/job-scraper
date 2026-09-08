@@ -1,6 +1,7 @@
 import { JOB_HEADERS, JOB_INDEX } from '../config/settings.js';
-import { mergeJobs, cell } from '../jobs/job-rows.js';
+import { cell } from '../jobs/job-rows.js';
 import { sheet, rows, formatJobs, showOpenJobs, saveJobs } from './sheets.js';
+import { readJobRecords, validateJobRecords } from './job-records.js';
 
 const tableKey = (name) => `employmentTable:${name}`;
 const viewKey = (name) => `employmentView:${name}`;
@@ -12,21 +13,9 @@ export function openJobTabs(book, types) {
 }
 
 export function readJobTabs(tables) {
-  const entries = tables.flatMap(({ type, tab }) =>
-    rows(tab, Math.max(JOB_HEADERS.length, tab.getLastColumn())).map((row, index) => ({
-      type,
-      tab,
-      row,
-      index,
-    })),
-  );
-  // Validate once across all tabs so a job cannot silently appear in multiple places.
-  mergeJobs(
-    entries.map((entry) => entry.row),
-    [],
-    new Date(),
-  );
-  return entries;
+  return validateJobRecords(tables.flatMap(({ type, tab }) =>
+    readJobRecords(tab).map(entry => ({ ...entry, type })),
+  ));
 }
 
 /** Preserve the original Jobs table until all destination rows have been verified. */
@@ -54,8 +43,7 @@ export function migrateJobTabs(book, types, log = () => {}) {
     sourceHeaders = legacy
       .getRange(1, 1, 1, Math.max(JOB_HEADERS.length, legacy.getLastColumn()))
       .getValues()[0];
-    source = rows(legacy, sourceHeaders.length);
-    mergeJobs(source, [], new Date());
+    source = validateJobRecords(readJobRecords(legacy)).map(entry => entry.row);
     for (const row of source) {
       if (!types.includes(row[JOB_INDEX['Employment Type']])) {
         throw new Error(`Job ${row[0]} has unsupported employment type. Jobs has been preserved.`);
@@ -112,7 +100,7 @@ export function migrateJobTabs(book, types, log = () => {}) {
       log('migration.verification_failed', { count: mismatches.length, samples: details }, 'error');
       throw new Error(`Migration verification failed for ${mismatches.length} job(s); first job ${details[0].jobId}: ${details[0].differences.map(item => item.column).join(', ')}. Original Jobs table preserved.`);
     }
-    const latestSource = rows(legacy, sourceHeaders.length);
+    const latestSource = validateJobRecords(readJobRecords(legacy)).map(entry => entry.row);
     if (
       latestSource.length !== source.length ||
       !latestSource.every((row, index) => sameRow(row, source[index]))
@@ -229,19 +217,26 @@ export function saveJobTabs(tables, existing, merged) {
       throw new Error(`Could not verify move for job ${row[0]}. Source retained.`);
   }
   for (const { tab } of tables) {
-    const outgoing = moves
-      .filter((move) => move.previous.tab === tab)
-      .sort((a, b) => b.previous.index - a.previous.index);
-    for (const move of outgoing) tab.deleteRows(move.previous.index + 2, 1);
+    const tabMoves = moves.filter(move => move.previous.tab === tab);
+    const latest = tabMoves.length ? validateJobRecords(readJobRecords(tab)) : [];
+    const outgoing = tabMoves
+      .map(move => {
+        const current = latest.find(entry => String(entry.row[0]) === String(move.previous.row[0]));
+        if (!current || !sameRow(current.row, move.previous.row))
+          throw new Error(`Job ${move.previous.row[0]} changed during move. Source retained; resolve conflict before retrying.`);
+        return current;
+      })
+      .sort((a, b) => b.rowNumber - a.rowNumber);
+    for (const entry of outgoing) tab.deleteRows(entry.rowNumber, 1);
     if (tab.getMaxRows() < 2) tab.insertRowsAfter(1, 1);
   }
   for (const { type, tab } of tables) {
-    const current = rows(tab, JOB_HEADERS.length);
+    const current = validateJobRecords(readJobRecords(tab));
     const wanted = new Map(
       merged.rows.filter((row) => row[4] === type).map((row) => [String(row[0]), row]),
     );
-    const ordered = current.map((row) => wanted.get(String(row[0])) || row);
-    const ids = new Set(current.map((row) => String(row[0])));
+    const ordered = current.map(({ row }) => wanted.get(String(row[0])) || row);
+    const ids = new Set(current.map(({ row }) => String(row[0])));
     const additions = [...wanted.values()].filter((row) => !ids.has(String(row[0])));
     saveJobs(tab, current, { rows: [...ordered, ...additions], added: additions.length });
   }

@@ -175,7 +175,10 @@ npm run check
 - `Another tracker operation is running`: lock contention. Wait and retry. Contended runs log Skipped without fetching.
 - `Missing <name> tab. Run setup first.`: run `setup` from Apps Script editor.
 - `<name> headers changed. Restore original header order.`: restore exact header names and order. Setup does not silently repair renamed headers.
-- `Jobs contains missing or duplicate IDs.`: restore numeric unique IDs before refreshing.
+- Completely empty rows inside job tables are skipped, including hidden rows. Refresh does not delete these rows; normal whole-row sorting may move them. A row containing Notes, custom values, or a formula (even one displaying an empty string) is not empty and must have a valid Job ID.
+- `<tab>!A<row>: missing Job ID on a non-empty row` or `invalid Job ID; expected digits only`: restore the ID at the reported cell. Arbitrary cell contents are not included in diagnostics.
+- `Duplicate Job ID <id>: <cell> and <cell>`: reconcile the two reported records while preserving tracking data. IDs must be unique across discovery tabs and separately within Applications; application-transfer conflict rules still apply.
+- Older deployments report `Jobs contains missing or duplicate IDs.` without locations. Deploy the updated build to tolerate blank rows and receive precise diagnostics.
 - `Searches row N: use supported employment type and Max Pages 1–3.`: fix dropdown value.
 - `No enabled searches with keywords.`: enable at least one row with non-blank keywords.
 - `HTTP 401/403/429` or `Access challenge received`: Google-hosted requests blocked. Keep scheduling disabled. Project does not bypass challenges or add external scraping infrastructure.

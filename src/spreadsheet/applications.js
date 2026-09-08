@@ -1,7 +1,7 @@
 import { APPLICATION_STATUSES, JOB_HEADERS, JOB_INDEX } from '../config/settings.js';
-import { mergeJobs } from '../jobs/job-rows.js';
+import { readJobRecords, validateJobRecords } from './job-records.js';
 import { appendRows, readJobTabs, rowDifferences } from './job-tabs.js';
-import { formatJobs, rows } from './sheets.js';
+import { formatJobs } from './sheets.js';
 
 export function openApplications(book) {
   let tab = book.getSheetByName('Applications');
@@ -25,9 +25,7 @@ export function openApplications(book) {
 }
 
 export function applicationRows(tab) {
-  const values = rows(tab, Math.max(JOB_HEADERS.length, tab.getLastColumn()));
-  mergeJobs(values, [], new Date());
-  return values;
+  return validateJobRecords(readJobRecords(tab)).map(entry => entry.row);
 }
 
 export function moveApplications(tables, destination, log = () => {}) {
@@ -56,11 +54,10 @@ export function moveApplications(tables, destination, log = () => {}) {
       const copied = applicationRows(destination).find(row => String(row[0]) === id);
       if (rowDifferences(copied, expected).length)
         throw new Error(`Could not verify application ${id}. Source retained.`);
-      const latest = rows(source.tab, Math.max(JOB_HEADERS.length, source.tab.getLastColumn()));
-      const index = latest.findIndex(row => String(row[0]) === id);
-      if (index < 0 || rowDifferences(latest[index], source.row).length)
+      const latest = validateJobRecords(readJobRecords(source.tab)).find(entry => String(entry.row[0]) === id);
+      if (!latest || rowDifferences(latest.row, source.row).length)
         throw new Error(`Job ${id} changed during transfer. Source retained; resolve conflict before retrying.`);
-      source.tab.deleteRows(index + 2, 1);
+      source.tab.deleteRows(latest.rowNumber, 1);
       if (source.tab.getMaxRows() < 2) source.tab.insertRowsAfter(1, 1);
       existing.set(id, copied);
       moved++;

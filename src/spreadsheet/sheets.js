@@ -1,3 +1,4 @@
+import { writeRecordColumns } from './job-records.js';
 import { restoreJobColumns } from './restore-columns.js';
 import { JOB_HEADERS, STATUSES, APPLICATION_STATUSES, JOB_COLUMN, JOB_INDEX } from '../config/settings.js';
 import { cell, expiredRow, expiredApplication } from '../jobs/job-rows.js';
@@ -111,9 +112,11 @@ export function removeExpiredJobs(jobs, beforeCleanup, now) {
   let removed = 0;
   // Re-read each row so an Applied edit after the initial scan survives cleanup.
   for (let i = beforeCleanup.length - 1; i >= 0; i--) {
-    const current = jobs.getRange(i + 2, 1, 1, JOB_HEADERS.length).getValues()[0];
+    const { rowNumber, row } = beforeCleanup[i];
+    const current = jobs.getRange(rowNumber, 1, 1, JOB_HEADERS.length).getValues()[0];
+    if (String(current[0]) !== String(row[0])) throw new Error(`${jobs.getName()}!A${rowNumber}: job changed during cleanup; retry refresh.`);
     if (current[JOB_INDEX['Status']] === 'Applied' || !expiredRow(current, now)) continue;
-    jobs.deleteRows(i + 2, 1);
+    jobs.deleteRows(rowNumber, 1);
     removed++;
   }
   if (jobs.getMaxRows() < 2) jobs.insertRowsAfter(1, 1);
@@ -124,9 +127,11 @@ export function removeExpiredApplications(tab, beforeCleanup, now) {
   let removed = 0;
   // Re-read each row so a status change away from Applied during the run survives cleanup.
   for (let i = beforeCleanup.length - 1; i >= 0; i--) {
-    const current = tab.getRange(i + 2, 1, 1, JOB_HEADERS.length).getValues()[0];
+    const { rowNumber, row } = beforeCleanup[i];
+    const current = tab.getRange(rowNumber, 1, 1, JOB_HEADERS.length).getValues()[0];
+    if (String(current[0]) !== String(row[0])) throw new Error(`${tab.getName()}!A${rowNumber}: job changed during cleanup; retry refresh.`);
     if (!expiredApplication(current, now)) continue;
-    tab.deleteRows(i + 2, 1);
+    tab.deleteRows(rowNumber, 1);
     removed++;
   }
   if (tab.getMaxRows() < 2) tab.insertRowsAfter(1, 1);
@@ -134,7 +139,8 @@ export function removeExpiredApplications(tab, beforeCleanup, now) {
 }
 
 export function saveJobs(jobs, existing, merged) {
-  const needed = merged.rows.length + 1;
+  const appendStart = jobs.getLastRow() + 1;
+  const needed = appendStart + merged.added - 1;
   if (needed > jobs.getMaxRows()) {
     jobs.insertRowsAfter(jobs.getMaxRows(), needed - jobs.getMaxRows());
     formatJobs(jobs);
@@ -145,37 +151,21 @@ export function saveJobs(jobs, existing, merged) {
   }
   if (merged.rows.length) {
     // Never write existing Status/Notes cells, even with stale snapshot data.
-    if (existing.length)
-      jobs
-        .getRange(2, JOB_COLUMN['Job ID'], existing.length, JOB_INDEX['Status'])
-        .setValues(
-          merged.rows
-            .slice(0, existing.length)
-            .map((row) => row.slice(0, JOB_INDEX['Status']).map(cell)),
-        );
+    const byId = new Map(merged.rows.map(row => [String(row[0]), row]));
+    writeRecordColumns(jobs, existing, JOB_COLUMN['Job ID'], JOB_INDEX['Status'],
+      entry => byId.get(String(entry.row[0])).slice(0, JOB_INDEX['Status']).map(cell));
+    writeRecordColumns(jobs, existing, JOB_COLUMN['Availability'], JOB_HEADERS.length - JOB_INDEX['Availability'],
+      entry => byId.get(String(entry.row[0])).slice(JOB_INDEX['Availability'], JOB_HEADERS.length).map(cell));
     if (merged.added)
-      jobs
-        .getRange(existing.length + 2, 1, merged.added, JOB_HEADERS.length)
-        .setValues(merged.rows.slice(existing.length).map((row) => row.map(cell)));
-    jobs
-      .getRange(
-        2,
-        JOB_COLUMN['Availability'],
-        merged.rows.length,
-        JOB_HEADERS.length - JOB_INDEX['Availability'],
-      )
-      .setValues(
-        merged.rows.map((row) =>
-          row.slice(JOB_INDEX['Availability'], JOB_HEADERS.length).map(cell),
-        ),
-      );
-    jobs.getRange(2, JOB_COLUMN['Match Score'], merged.rows.length, 1).setNumberFormat('0');
+      jobs.getRange(appendStart, 1, merged.added, JOB_HEADERS.length)
+        .setValues(merged.rows.slice(existing.length).map(row => row.slice(0, JOB_HEADERS.length).map(cell)));
+    jobs.getRange(2, JOB_COLUMN['Match Score'], jobs.getLastRow() - 1, 1).setNumberFormat('0');
     // Sort every used column, keeping tracking and custom columns attached to IDs.
     jobs
       .getRange(
         2,
         JOB_COLUMN['Job ID'],
-        merged.rows.length,
+        jobs.getLastRow() - 1,
         Math.max(JOB_HEADERS.length, jobs.getLastColumn()),
       )
       .sort([

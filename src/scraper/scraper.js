@@ -1,3 +1,4 @@
+import { readJobRecords, validateJobRecords, writeRecordColumns } from '../spreadsheet/job-records.js';
 import { openApplications, applicationRows, moveApplications } from '../spreadsheet/applications.js';
 import { openJobTabs, readJobTabs, saveJobTabs } from '../spreadsheet/job-tabs.js';
 import {
@@ -45,22 +46,20 @@ export function runScraper(log = () => {}) {
         const applicationIds = new Set(applicationRows(applications).map(row => String(row[0])));
         const beforeCleanup = readJobTabs(tables);
         for (const { tab } of tables) {
-          removed += removeExpiredJobs(tab, rows(tab, JOB_HEADERS.length), started.getTime());
+          removed += removeExpiredJobs(tab, validateJobRecords(readJobRecords(tab)), started.getTime());
         }
         const applicationsRemoved = removeExpiredApplications(
           applications,
-          applicationRows(applications),
+          validateJobRecords(readJobRecords(applications)),
           started.getTime(),
         );
         removed += applicationsRemoved;
         log('cleanup.completed', { removed, existing: beforeCleanup.length, applicationsRemoved });
-        const remaining = readJobTabs(tables).map((entry) => entry.row);
+        const remainingEntries = readJobTabs(tables);
+        const remaining = remainingEntries.map(entry => entry.row);
         for (const { tab } of tables) {
-          const count = Math.max(0, tab.getLastRow() - 1);
-          if (count)
-            tab
-              .getRange(2, JOB_COLUMN['Availability'], count, 1)
-              .setValues(Array.from({ length: count }, () => ['Unknown']));
+          writeRecordColumns(tab, remainingEntries.filter(entry => entry.tab === tab),
+            JOB_COLUMN['Availability'], 1, () => ['Unknown']);
           showOpenJobs(tab);
         }
         const searchTab = sheet(book, 'Searches', SEARCH_HEADERS);
