@@ -165,6 +165,8 @@ export function pruneRunLogs(tab, now = Date.now()) {
 }
 
 export function logRun(tab, values) {
-  tab.appendRow(values.map(cell));
-  tab.getRange(tab.getLastRow(), 1, 1, values.length).setWrap(true);
+  // Newest run first: insert below frozen header so row 2 always holds latest.
+  tab.insertRowBefore(2);
+  tab.getRange(2, 1, 1, values.length).setValues([values.map(cell)]);
+  tab.getRange(2, 1, 1, values.length).setWrap(true);
 }

@@ -29,6 +29,7 @@ class Tab {
   }
   getLastColumn() { return Math.max(0, ...this.data.map(row => row.length)); }
   insertRowsAfter(_row, n) { this.maxRows += n; }
+  insertRowBefore(row) { this.data.splice(row - 1, 0, []); this.maxRows += 1; }
   deleteRows(row, n) { this.data.splice(row - 1, n); this.maxRows -= n; }
   showColumns(start, count) { this.visible = [start, count]; }
   hideColumns(start, count) { this.hidden = [start, count]; }
@@ -160,10 +161,22 @@ test('lock contention retains old logs until a run holds the lock', () => {
   tab.appendRow(old);
   held = true;
   runScraper();
-  assert.deepEqual(tab.data[1], old);
+  assert.equal(tab.data[1][6], 'Skipped');
+  assert.deepEqual(tab.data[2], old);
   held = false;
   runScraper();
   assert.equal(tab.data.some(row => row[1] === 'old'), false);
+});
+
+test('newest run is logged first below the header', () => {
+  configure();
+  runScraper();
+  const first = book.tabs.get('Runs').data[1][0].getTime();
+  runScraper();
+  const tab = book.tabs.get('Runs');
+  assert.equal(tab.data.length, 3);
+  assert.ok(tab.data[1][0].getTime() >= first);
+  assert.equal(tab.data[2][0].getTime(), first);
 });
 
 test('setup and scraping work without a spreadsheet UI context', () => {
@@ -197,7 +210,7 @@ test('manual repeat skips known jobs and never rewrites existing cells', () => {
   assert.deepEqual([jobs.data[1][11], jobs.data[1][12]], ['Saved', 'Edited while fetching']);
   assert.ok(jobs.writes.every(write => write.column > 26));
   assert.equal(jobs.data[1][13], 'Open');
-  assert.equal(book.getSheetByName('Runs').data.at(-1)[6], 'Success');
+  assert.equal(book.getSheetByName('Runs').data[1][6], 'Success');
 });
 
 test('unconfigured tracker logs skipped without making requests', () => {
@@ -236,7 +249,7 @@ test('source failure preserves existing rows and records failure', () => {
   assert.equal(runScraper().outcome, 'Failed');
   assert.equal(JSON.stringify(book.getSheetByName('Part Time').data.map(row => row.slice(0, 13))), before);
   assert.equal(book.getSheetByName('Part Time').data[1][13], 'Open');
-  assert.match(book.getSheetByName('Runs').data.at(-1)[7], /HTTP 403/);
+  assert.match(book.getSheetByName('Runs').data[1][7], /HTTP 403/);
 });
 
 test('setup seeds nine All-type searches from resume only once', () => {
@@ -278,7 +291,7 @@ test('expired discovery rows are removed even with searches disabled', () => {
   book.getSheetByName('Searches').data[1][0] = false;
   const result = runScraper();
   assert.equal(result.removed, 1); assert.equal(jobs.data.length, 2); assert.equal(jobs.data[1][0], keptId);
-  assert.equal(book.getSheetByName('Runs').data.at(-1)[8], 1);
+  assert.equal(book.getSheetByName('Runs').data[1][8], 1);
 });
 
 test('legacy headers migrate without losing notes', () => {
@@ -683,7 +696,7 @@ test('all application statuses stay permanently including stale Applied', async 
   const result = runScraper();
   assert.equal(result.removed, 0);
   assert.equal(apps.data.length, 2);
-  assert.equal(book.getSheetByName('Runs').data.at(-1)[8], 0);
+  assert.equal(book.getSheetByName('Runs').data[1][8], 0);
   const { APPLICATION_STATUSES } = await import('../src/config/settings.js');
   const kept = APPLICATION_STATUSES.filter(value => value !== 'Applied');
   kept.forEach((status, index) => {
@@ -766,7 +779,7 @@ for (const [label, column, value] of [['Notes-only', 12, 'Private note'], ['cust
     const result = runScraper();
     assert.equal(result.outcome, 'Failed'); assert.equal(fetches, before);
     assert.match(result.error, /^Part Time!A3: (missing|invalid) Job ID/);
-    assert.equal(book.tabs.get('Runs').data.at(-1)[7], result.error);
+    assert.equal(book.tabs.get('Runs').data[1][7], result.error);
     assert.ok(logs.some(line => line.includes('scraper.failed') && line.includes('Part Time!A3')));
     assert.ok(!logs.join('').includes('Private'));
     assert.ok(!logs.join('').includes('secret-invalid-value'));

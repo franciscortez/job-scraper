@@ -32,7 +32,7 @@ Think of the spreadsheet as three pages:
 
 - **Part Time, Full Time, Gig, Any:** editable job lists. Each job is stored in its employment-type tab.
 - **Searches:** what to look for. Turn searches on or off, change the words, pick the job type, pick how many pages to read.
-- **Runs:** a diary of the latest 24 hours. Each run writes one line saying what happened, how many jobs were added, and if anything went wrong. At the next scraper run, entries at least 24 hours old are deleted; headers and newer entries stay in the same tab. Cleanup requires the scraper lock and does not run while the scraper is idle. Entries with missing or invalid timestamps are kept for inspection.
+- **Runs:** a diary of the latest 24 hours. Each run writes one line directly below the header so the newest run is always on top and older runs follow underneath. At the next scraper run, entries at least 24 hours old are deleted; headers and newer entries stay in the same tab. Cleanup requires the scraper lock and does not run while the scraper is idle. Entries with missing or invalid timestamps are kept for inspection.
 
 To use it daily:
 
@@ -91,7 +91,7 @@ These are the rules the helper always follows.
 
 ## If something looks wrong
 
-1. Open the **Runs** page and read the newest line from right to left: result, error, numbers.
+1. Open the **Runs** page and read the line directly below the header (the newest run) from right to left: result, error, numbers.
 2. If a job seems missing, check Applications, the Removed count in Runs, and your filters. The first updated run removes the old automatic Open-only filter; it does not change stored availability or recover deleted rows.
 3. If no new jobs appear, check the **Searches** page: at least one row needs to be turned on and have words in it.
 4. If the sheet says headers changed, put the header names back in the original order.
