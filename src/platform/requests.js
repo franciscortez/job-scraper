@@ -1,9 +1,10 @@
-import { RUN_BUDGET_MS, REQUEST_DELAY_MS, MAX_RETRIES } from '../config/settings.js';
+import { deferredWork } from './budget.js';
+import { NETWORK_BUDGET_MS, REQUEST_DELAY_MS, MAX_RETRIES } from '../config/settings.js';
 import { emit } from '../logging/logging.js';
 
 export function assertBudget(io, started, message) {
-  if (io.now() - started >= RUN_BUDGET_MS) {
-    throw Object.assign(new Error(message), { stop: true });
+  if (io.now() - started >= NETWORK_BUDGET_MS) {
+    throw Object.assign(deferredWork('network requests'), { message });
   }
 }
 
@@ -12,8 +13,8 @@ export function createRequester(io, started, kind) {
   let attempts = 0;
   const isSearch = kind === 'search';
   const budgetMessage = isSearch
-    ? 'Four-minute budget reached; remaining pages skipped.'
-    : 'Four-minute budget reached.';
+    ? 'Network budget reached; remaining pages skipped.'
+    : 'Network budget reached.';
   return (getUrl, context = {}) => {
     for (let retry = 0; retry <= MAX_RETRIES; retry++) {
       if (isSearch) {

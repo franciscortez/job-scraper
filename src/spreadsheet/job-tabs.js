@@ -1,15 +1,20 @@
+import { recoverJobSort } from './sort-recovery.js';
 import { JOB_HEADERS, JOB_INDEX } from '../config/settings.js';
 import { cell } from '../jobs/job-rows.js';
-import { sheet, rows, formatJobs, showOpenJobs, saveJobs } from './sheets.js';
+import { sheet, formatJobs, prepareJobFilter, sortJobsByDate } from './sheets.js';
 import { readJobRecords, validateJobRecords } from './job-records.js';
 
 const tableKey = (name) => `employmentTable:${name}`;
 const viewKey = (name) => `employmentView:${name}`;
 
-export function openJobTabs(book, types) {
+export function openJobTabs(book, types, log = () => {}) {
   if (book.getSheetByName('Jobs'))
     throw new Error('Run setup to migrate Jobs into employment tabs first.');
-  return types.map((type) => ({ type, tab: sheet(book, type, JOB_HEADERS) }));
+  return types.map((type) => {
+    const tab = book.getSheetByName(type);
+    if (tab) recoverJobSort(tab, log);
+    return { type, tab: sheet(book, type, JOB_HEADERS) };
+  });
 }
 
 export function readJobTabs(tables) {
@@ -25,7 +30,9 @@ export function migrateJobTabs(book, types, log = () => {}) {
   // Preflight every target before converting any formula view.
   for (const type of types) {
     const tab = book.getSheetByName(type);
-    if (!tab || !tab.getLastRow()) continue;
+    if (!tab) continue;
+    recoverJobSort(tab, log);
+    if (!tab.getLastRow()) continue;
     const id = String(tab.getSheetId());
     if (
       properties.getProperty(tableKey(type)) !== id &&
@@ -39,7 +46,7 @@ export function migrateJobTabs(book, types, log = () => {}) {
   let source = [];
   let sourceHeaders = JOB_HEADERS;
   if (legacy) {
-    sheet(book, 'Jobs', JOB_HEADERS);
+    sheet(book, 'Jobs', JOB_HEADERS, true);
     sourceHeaders = legacy
       .getRange(1, 1, 1, Math.max(JOB_HEADERS.length, legacy.getLastColumn()))
       .getValues()[0];
@@ -66,7 +73,7 @@ export function migrateJobTabs(book, types, log = () => {}) {
         tab.insertColumnsAfter(tab.getMaxColumns(), sourceHeaders.length - tab.getMaxColumns());
       tab.getRange(1, 1, 1, sourceHeaders.length).setValues([sourceHeaders]);
     }
-    sheet(book, type, JOB_HEADERS);
+    sheet(book, type, JOB_HEADERS, true);
     // Apply data formats before copying or reading a partially migrated destination.
     // Otherwise Sheets may return numeric IDs or serial numbers instead of Dates.
     formatJobs(tab);
@@ -115,7 +122,8 @@ export function migrateJobTabs(book, types, log = () => {}) {
     tab.setFrozenRows(1);
     tab.getRange(1, 1, 1, JOB_HEADERS.length).setFontWeight('bold').setBackground('#d9ead3');
     formatJobs(tab);
-    showOpenJobs(tab);
+    prepareJobFilter(tab);
+    sortJobsByDate(tab);
     JOB_HEADERS.forEach((name, index) =>
       tab.setColumnWidth(
         index + 1,
@@ -188,56 +196,4 @@ export function appendRows(tab, additions, headers, statuses) {
     .setValues(
       additions.map((row) => Array.from({ length: width }, (_, index) => cell(row[index] ?? ''))),
     );
-}
-
-/** Save normal updates in place; move verified type changes with their tracking cells. */
-export function saveJobTabs(tables, existing, merged) {
-  const byId = new Map(existing.map((entry) => [String(entry.row[0]), entry]));
-  const moves = [];
-  for (const row of merged.rows) {
-    const previous = byId.get(String(row[0]));
-    if (!tables.some((table) => table.type === row[4]))
-      throw new Error(`Unsupported employment type for job ${row[0]}.`);
-    if (previous && previous.type !== row[4]) moves.push({ previous, row });
-  }
-  // Copy moved rows first. On a write failure, their source records remain available.
-  for (const { previous, row } of moves) {
-    const destination = tables.find((table) => table.type === row[4]).tab;
-    const headers = previous.tab.getRange(1, 1, 1, previous.row.length).getValues()[0];
-    const complete = [
-      ...row.slice(0, JOB_HEADERS.length),
-      ...previous.row.slice(JOB_HEADERS.length),
-    ];
-    appendRows(destination, [complete], headers);
-    SpreadsheetApp.flush();
-    const copied = rows(destination, complete.length).find(
-      (value) => String(value[0]) === String(row[0]),
-    );
-    if (!sameRow(copied, complete))
-      throw new Error(`Could not verify move for job ${row[0]}. Source retained.`);
-  }
-  for (const { tab } of tables) {
-    const tabMoves = moves.filter(move => move.previous.tab === tab);
-    const latest = tabMoves.length ? validateJobRecords(readJobRecords(tab)) : [];
-    const outgoing = tabMoves
-      .map(move => {
-        const current = latest.find(entry => String(entry.row[0]) === String(move.previous.row[0]));
-        if (!current || !sameRow(current.row, move.previous.row))
-          throw new Error(`Job ${move.previous.row[0]} changed during move. Source retained; resolve conflict before retrying.`);
-        return current;
-      })
-      .sort((a, b) => b.rowNumber - a.rowNumber);
-    for (const entry of outgoing) tab.deleteRows(entry.rowNumber, 1);
-    if (tab.getMaxRows() < 2) tab.insertRowsAfter(1, 1);
-  }
-  for (const { type, tab } of tables) {
-    const current = validateJobRecords(readJobRecords(tab));
-    const wanted = new Map(
-      merged.rows.filter((row) => row[4] === type).map((row) => [String(row[0]), row]),
-    );
-    const ordered = current.map(({ row }) => wanted.get(String(row[0])) || row);
-    const ids = new Set(current.map(({ row }) => String(row[0])));
-    const additions = [...wanted.values()].filter((row) => !ids.has(String(row[0])));
-    saveJobs(tab, current, { rows: [...ordered, ...additions], added: additions.length });
-  }
 }

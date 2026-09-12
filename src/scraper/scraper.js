@@ -1,25 +1,24 @@
-import { readJobRecords, validateJobRecords, writeRecordColumns } from '../spreadsheet/job-records.js';
+import { createRunBudget } from '../platform/budget.js';
+import { openExpiredJobs, expiredIds, removeExpiredJobs } from '../spreadsheet/expiry.js';
 import { openApplications, applicationRows, moveApplications } from '../spreadsheet/applications.js';
-import { openJobTabs, readJobTabs, saveJobTabs } from '../spreadsheet/job-tabs.js';
+import { openJobTabs, readJobTabs, appendRows } from '../spreadsheet/job-tabs.js';
 import {
   SEARCH_HEADERS,
   JOB_HEADERS,
   RUN_HEADERS,
   RETENTION_MS,
-  JOB_COLUMN,
-  JOB_INDEX,
   JOB_TAB_TYPES,
 } from '../config/settings.js';
 import { readSearches, selectSearches } from './searches.js';
-import { mergeJobs, postedTime, rowJob, applyVerification } from '../jobs/job-rows.js';
+import { mergeJobs, postedTime, applyVerification } from '../jobs/job-rows.js';
 import {
   spreadsheet,
   sheet,
   rows,
-  showOpenJobs,
+  prepareJobFilter,
+  sortJobsByDate,
   logRun,
-  removeExpiredJobs,
-  removeExpiredApplications,
+  pruneRunLogs,
 } from '../spreadsheet/sheets.js';
 import { applyProfile } from '../spreadsheet/profile.js';
 import { locked, createIo } from '../platform/runtime.js';
@@ -31,37 +30,34 @@ export function runScraper(log = () => {}) {
   return locked(
     () => {
       const started = new Date();
+      const budget = createRunBudget(started.getTime());
       let result;
       let moved = 0;
       let checked = 0;
+      let skippedKnown = 0;
       let added = 0,
         updated = 0,
         removed = 0;
       let outcome = 'Failed';
       let errorText = '';
       try {
-        const tables = openJobTabs(book, JOB_TAB_TYPES);
+        pruneRunLogs(runs, started.getTime());
+        budget.check('initialization');
+        const history = openExpiredJobs(book);
+        const excludedIds = expiredIds(history);
+        const tables = openJobTabs(book, JOB_TAB_TYPES, log);
         const applications = openApplications(book);
-        moved = moveApplications(tables, applications, log);
-        const applicationIds = new Set(applicationRows(applications).map(row => String(row[0])));
-        const beforeCleanup = readJobTabs(tables);
-        for (const { tab } of tables) {
-          removed += removeExpiredJobs(tab, validateJobRecords(readJobRecords(tab)), started.getTime());
-        }
-        const applicationsRemoved = removeExpiredApplications(
-          applications,
-          validateJobRecords(readJobRecords(applications)),
-          started.getTime(),
-        );
-        removed += applicationsRemoved;
-        log('cleanup.completed', { removed, existing: beforeCleanup.length, applicationsRemoved });
-        const remainingEntries = readJobTabs(tables);
-        const remaining = remainingEntries.map(entry => entry.row);
-        for (const { tab } of tables) {
-          writeRecordColumns(tab, remainingEntries.filter(entry => entry.tab === tab),
-            JOB_COLUMN['Availability'], 1, () => ['Unknown']);
-          showOpenJobs(tab);
-        }
+        moved = moveApplications(tables, applications, log, budget);
+        budget.check('cleanup');
+        removed = removeExpiredJobs(tables, history, started.getTime(), log, budget);
+        for (const id of expiredIds(history)) excludedIds.add(id);
+        const knownIds = new Set([
+          ...excludedIds,
+          ...readJobTabs(tables).map(entry => String(entry.row[0])),
+          ...applicationRows(applications).map(row => String(row[0])),
+        ]);
+        budget.check('search preparation');
+        for (const { tab } of tables) prepareJobFilter(tab);
         const searchTab = sheet(book, 'Searches', SEARCH_HEADERS);
         applyProfile(searchTab);
         const properties = PropertiesService.getDocumentProperties();
@@ -83,33 +79,55 @@ export function runScraper(log = () => {}) {
         } else {
           const io = createIo(log);
           result = collect(searches, io, started.getTime());
-          const { candidates, recent } = prepareCandidates(remaining, result.jobs.filter(job => !applicationIds.has(String(job.id))), Date.now());
+          skippedKnown = result.jobs.filter(job => knownIds.has(String(job.id))).length;
+          const { candidates, recent } = prepareCandidates(
+            result.jobs.filter(job => !knownIds.has(String(job.id))), Date.now());
           log('candidates.prepared', {
             discovered: result.jobs.length,
+            skippedKnown,
             recent: recent.length,
             candidates: candidates.size,
           });
           const verification = verifyCandidates(result, candidates, io, started, properties);
           checked = verification.results.size;
+          for (const search of searches) {
+            const discovered = result.jobs.filter(job => job.matches.includes(search.label));
+            const eligible = discovered.filter(job => candidates.has(job.id));
+            log('search.coverage', {
+              search: search.label,
+              discovered: discovered.length,
+              skippedKnown: discovered.filter(job => knownIds.has(String(job.id))).length,
+              eligible: eligible.length,
+              checked: eligible.filter(job => verification.results.has(job.id)).length,
+              deferred: eligible.filter(job => !verification.results.has(job.id)).length,
+            });
+          }
           if (result.stop) log('verification.skipped', { reason: verification.errors[0] }, 'warn');
           result.errors.push(...verification.errors);
           result.partial ||= verification.errors.length > 0;
-          const merged = saveVerifiedJobs(tables, recent, verification);
+          const merged = saveVerifiedJobs(tables, applications, recent, verification, excludedIds, budget);
           log('jobs.saved', {
             added: merged.added,
             updated: merged.updated,
             total: merged.rows.length,
           });
-          persistCursors(properties, verification, selection, result.stop, log);
           added = merged.added;
+          persistCursors(properties, verification, selection, result.stop, log);
           updated = merged.updated;
           outcome = scraperOutcome(result, verification);
+          if (outcome !== 'Failed') {
+            for (const { tab } of tables) sortJobsByDate(tab, budget, log);
+          }
           errorText = result.errors.join('\n');
         }
       } catch (error) {
+        outcome = error.deferred ? 'Limited' : 'Failed';
+        if (error.deferred) log('work.deferred', { stage: error.stage }, 'warn');
         moved = error.moved ?? moved;
+        added = error.added ?? added;
+        removed = error.removed ?? removed;
         errorText = error.message;
-        log('scraper.failed', { error: errorText }, 'error');
+        if (!error.deferred) log('scraper.failed', { error: errorText }, 'error');
       }
       log(
         'scraper.completed',
@@ -118,6 +136,7 @@ export function runScraper(log = () => {}) {
           durationMs: Date.now() - started.getTime(),
           pages: result?.pages || 0,
           checked,
+          skippedKnown,
           added,
           updated,
           removed,
@@ -138,7 +157,7 @@ export function runScraper(log = () => {}) {
         removed,
       ]);
       book.toast(
-        `${outcome}: ${added} added, ${updated} updated, ${moved} moved to Applications, ${removed} expired rows removed. ${errorText ? 'See Runs for details.' : ''}`,
+        `${outcome}: ${added} added, ${skippedKnown} already saved, ${moved} moved to Applications. ${removed} expired jobs removed; newest posts first. ${errorText ? 'See Runs for details.' : ''}`,
         'Job Tracker',
         8,
       );
@@ -176,23 +195,12 @@ export function runScraper(log = () => {}) {
   );
 }
 
-function prepareCandidates(remaining, discovered, now) {
-  const candidates = new Map(
-    remaining.map((row) => [String(row[JOB_INDEX['Job ID']]), { ...rowJob(row), tracked: true }]),
-  );
+function prepareCandidates(discovered, now) {
   const recent = discovered.filter((job) => {
     const posted = postedTime(job.posted);
     return posted !== null && posted <= now && now - posted < RETENTION_MS;
   });
-  for (const job of recent) {
-    const previous = candidates.get(job.id);
-    candidates.set(job.id, {
-      ...job,
-      checked: previous?.checked,
-      priorSkills: previous?.priorSkills || [],
-    });
-  }
-  return { candidates, recent };
+  return { candidates: new Map(recent.map(job => [job.id, job])), recent };
 }
 
 function verifyCandidates(result, candidates, io, started, properties) {
@@ -208,28 +216,38 @@ function verifyCandidates(result, candidates, io, started, properties) {
   return verification;
 }
 
-function saveVerifiedJobs(tables, recent, verification) {
+function saveVerifiedJobs(tables, applications, recent, verification, excludedIds, budget) {
+  budget.check('saving new jobs');
+  // Read again after network work: user edits and newly inserted IDs must survive.
+  const existing = readJobTabs(tables);
+  const knownIds = new Set([
+    ...excludedIds,
+    ...existing.map(entry => String(entry.row[0])),
+    ...applicationRows(applications).map(row => String(row[0])),
+  ]);
   const accepted = recent
-    .filter((job) => verification.results.get(job.id)?.state === 'Open')
-    .map((job) => {
+    .filter(job => !knownIds.has(String(job.id)) && verification.results.get(job.id)?.state === 'Open')
+    .map(job => {
       const check = verification.results.get(job.id);
       return { ...job, title: check.title, type: check.type };
     });
-  // Read again after network work so edits made during fetching survive.
-  const existing = readJobTabs(tables);
-  const merged = mergeJobs(
-    existing.map((entry) => entry.row),
-    accepted,
-    new Date(),
-  );
-  // Rechecked jobs can change type even when absent from this run's search pages.
-  for (const row of merged.rows) {
-    const check = verification.results.get(String(row[0]));
-    if (check?.state === 'Open') row[JOB_INDEX['Employment Type']] = check.type;
+  const additions = mergeJobs([], accepted, new Date());
+  applyVerification(additions.rows, verification.results);
+  let added = 0;
+  try {
+    for (const { type, tab } of tables) {
+      const batch = additions.rows.filter(row => row[4] === type);
+      if (batch.length) budget.check('appending jobs');
+      appendRows(tab, batch, JOB_HEADERS);
+      added += batch.length;
+      prepareJobFilter(tab);
+    }
+    SpreadsheetApp.flush();
+  } catch (error) {
+    error.added = added;
+    throw error;
   }
-  applyVerification(merged.rows, verification.results);
-  saveJobTabs(tables, existing, merged);
-  return merged;
+  return { rows: [...existing.map(entry => entry.row), ...additions.rows], added, updated: 0 };
 }
 
 function persistCursors(properties, verification, selection, stopped, log) {
@@ -247,6 +265,7 @@ function persistCursors(properties, verification, selection, stopped, log) {
 }
 
 function scraperOutcome(collection, verification) {
+  if (collection.deferred || verification.deferred) return 'Limited';
   if (collection.partial) return collection.pages ? 'Partial' : 'Failed';
   return verification.limited ? 'Limited' : 'Success';
 }

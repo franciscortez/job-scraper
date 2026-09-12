@@ -81,7 +81,7 @@ test('cursor resumes safely when previous job disappears and wraps after the las
 test('verification honors shared time budget and retries server failures', () => {
   let time = 239500, calls = 0;
   const io = { now: () => time, sleep: ms => { time += ms; }, fetch: () => { calls++; return calls < 3 ? { status: 503 } : response(detail()); } };
-  assert.equal(verifyJobs([job], io, 0).results.get('123').state, 'Unknown');
+  assert.equal(verifyJobs([job], io, 0).results.size, 0);
   assert.equal(calls, 0);
   time = 0;
   assert.equal(verifyJobs([job], io, 0).results.get('123').state, 'Open'); assert.equal(calls, 3);

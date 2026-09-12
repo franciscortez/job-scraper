@@ -47,10 +47,14 @@ export const DEFAULT_SEARCHES = [
   'Google Apps Script',
 ].map((keyword) => [true, keyword, 'All', 1]);
 export const PREFERRED_SKILLS = ['Next.js', 'Codex', 'Claude Code', 'Supabase'];
+// New-post eligibility and discovery retention; Applications are exempt.
 export const RETENTION_MS = 14 * 24 * 60 * 60 * 1000;
+export const RUN_LOG_RETENTION_MS = 24 * 60 * 60 * 1000;
 export const MAX_JOB_CHECKS_PER_RUN = 50;
 
-export const RUN_BUDGET_MS = 240000;
+export const RUN_BUDGET_MS = 180000;
+export const FINALIZE_RESERVE_MS = 15000;
+export const NETWORK_BUDGET_MS = 135000;
 export const REQUEST_DELAY_MS = 1000;
 export const MAX_RETRIES = 2;
 export const PREFERRED_JOB_SLOTS = 38;

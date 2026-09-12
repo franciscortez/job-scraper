@@ -1,3 +1,4 @@
+import { openExpiredJobs } from './expiry.js';
 import { openApplications } from './applications.js';
 import { migrateJobTabs, openJobTabs } from './job-tabs.js';
 import {
@@ -15,6 +16,7 @@ export function setup(log = () => {}) {
   return locked(() => {
     const book = spreadsheet();
     openApplications(book);
+    openExpiredJobs(book);
     migrateJobTabs(book, JOB_TAB_TYPES, log);
     book.setSpreadsheetTimeZone('Asia/Manila');
     for (const [name, headers] of [
@@ -61,7 +63,7 @@ export function setup(log = () => {}) {
     // Menu creation belongs to the spreadsheet's onOpen trigger, not editor setup.
 
     book.toast(
-      'Resume searches ready for all employment types. Unapplied jobs 14 days old are removed on refresh; stale Applied rows 14 days after transfer are also removed, other application outcomes kept. Run now to verify open jobs.',
+      'Searches ready for all employment types. Refresh adds unseen recent matches and removes discovery jobs 14 days after posting. Applications remain permanent. Job tabs show newest posts first.',
       'Tracker ready',
       10,
     );

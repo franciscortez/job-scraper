@@ -1,7 +1,7 @@
-import { writeRecordColumns } from './job-records.js';
+import { recoverJobSort, startJobSort } from './sort-recovery.js';
 import { restoreJobColumns } from './restore-columns.js';
-import { JOB_HEADERS, STATUSES, APPLICATION_STATUSES, JOB_COLUMN, JOB_INDEX } from '../config/settings.js';
-import { cell, expiredRow, expiredApplication } from '../jobs/job-rows.js';
+import { JOB_HEADERS, STATUSES, APPLICATION_STATUSES, JOB_COLUMN, JOB_INDEX, RUN_LOG_RETENTION_MS } from '../config/settings.js';
+import { cell, postedTime } from '../jobs/job-rows.js';
 export function spreadsheet() {
   const book = SpreadsheetApp.getActiveSpreadsheet();
   if (!book) throw new Error('Use this script bound to the job tracker spreadsheet.');
@@ -15,7 +15,7 @@ export function sheet(book, name, headers, create = false) {
   if (tab.getMaxColumns() < headers.length)
     tab.insertColumnsAfter(tab.getMaxColumns(), headers.length - tab.getMaxColumns());
   if (tab.getLastRow() === 0 && create) tab.getRange(1, 1, 1, headers.length).setValues([headers]);
-  if (headers === JOB_HEADERS) restoreJobColumns(tab);
+  if (headers === JOB_HEADERS && create) restoreJobColumns(tab);
   const actual = tab.getRange(1, 1, 1, headers.length).getValues()[0];
   const legacyLength =
     (headers === JOB_HEADERS ? [16, 13] : name === 'Runs' ? [8] : []).find(
@@ -40,19 +40,60 @@ function wrapText(tab, width) {
   tab.getRange(1, 1, tab.getMaxRows(), Math.max(width, tab.getLastColumn())).setWrap(true);
 }
 
-export function showOpenJobs(tab) {
-  if (!tab.getFilter()) tab.getRange(1, 1, tab.getMaxRows(), JOB_HEADERS.length).createFilter();
-  // A legacy filter may cover only the original 13 columns.
-  if (tab.getFilter().getRange().getNumColumns() < JOB_HEADERS.length) {
-    tab.getFilter().remove();
-    tab.getRange(1, 1, tab.getMaxRows(), JOB_HEADERS.length).createFilter();
+/** Remove the old automatic Open-only filter once, preserving user filters. */
+export function prepareJobFilter(tab) {
+  const properties = PropertiesService.getDocumentProperties();
+  const key = `appendOnlyFilter:${tab.getSheetId()}`;
+  let filter = tab.getFilter();
+  if (properties.getProperty(key) !== '1') {
+    const criteria = filter && filter.getRange().getNumColumns() >= JOB_COLUMN['Availability']
+      ? filter.getColumnFilterCriteria(JOB_COLUMN['Availability']) : null;
+    if (criteria && String(criteria.getCriteriaType()) === 'TEXT_EQUAL_TO' &&
+        criteria.getCriteriaValues()[0] === 'Open') {
+      filter.removeColumnFilterCriteria(JOB_COLUMN['Availability']);
+    }
+    properties.setProperty(key, '1');
   }
-  tab
-    .getFilter()
-    .setColumnFilterCriteria(
-      JOB_COLUMN['Availability'],
-      SpreadsheetApp.newFilterCriteria().whenTextEqualTo('Open').build(),
-    );
+  const width = Math.max(JOB_HEADERS.length, tab.getLastColumn());
+  if (filter && (filter.getRange().getNumRows() < tab.getMaxRows() ||
+      filter.getRange().getNumColumns() < width)) {
+    const criteria = Array.from({ length: filter.getRange().getNumColumns() },
+      (_, index) => filter.getColumnFilterCriteria(index + 1));
+    filter.remove();
+    tab.getRange(1, 1, tab.getMaxRows(), width).createFilter();
+    filter = tab.getFilter();
+    criteria.forEach((value, index) => {
+      if (value) filter.setColumnFilterCriteria(index + 1, value);
+    });
+  }
+  if (!filter) tab.getRange(1, 1, tab.getMaxRows(), width).createFilter();
+}
+
+/** Native whole-row sorting preserves formulas and custom cells. */
+export function sortJobsByDate(tab, budget = { check() {} }, log = () => {}) {
+  budget.check('sorting');
+  recoverJobSort(tab, log);
+  const count = tab.getLastRow() - 1;
+  if (count < 2) return;
+  // Dedicated columns beyond the entire grid cannot overwrite custom data.
+  const start = tab.getMaxColumns() + 1;
+  const rows = tab.getRange(2, 1, count, JOB_HEADERS.length).getValues();
+  // Both sentinels sort below every valid JavaScript date timestamp.
+  const emptyDate = Number.MIN_SAFE_INTEGER;
+  const keys = rows.map(row => [
+    row[0] === '' ? emptyDate : postedTime(row[JOB_INDEX['Posted Date Text']]) ?? emptyDate + 1,
+    Number(row[0]) || 0,
+  ]);
+  startJobSort(tab, start);
+  try {
+    tab.getRange(2, start, count, 2).setValues(keys);
+    tab.getRange(2, 1, count, start + 1).sort([
+      { column: start, ascending: false },
+      { column: start + 1, ascending: false },
+    ]);
+  } finally {
+    recoverJobSort(tab, log);
+  }
 }
 
 export function formatJobs(tab, statuses = STATUSES) {
@@ -103,77 +144,27 @@ export function rows(tab, width) {
   return tab.getLastRow() > 1 ? tab.getRange(2, 1, tab.getLastRow() - 1, width).getValues() : [];
 }
 
+// Call only while holding the scraper lock. Delete bottom-up so physical rows stay valid.
+export function pruneRunLogs(tab, now = Date.now()) {
+  const timestamps = rows(tab, 1);
+  let removed = 0;
+  let count = 0;
+  for (let index = timestamps.length - 1; index >= -1; index--) {
+    const value = timestamps[index]?.[0];
+    // Unknown timestamps cannot safely establish age; retain them for inspection.
+    const expired = value instanceof Date && Number.isFinite(value.getTime()) &&
+      value.getTime() <= now - RUN_LOG_RETENTION_MS;
+    if (expired) count++;
+    else if (count) {
+      tab.deleteRows(index + 3, count);
+      removed += count;
+      count = 0;
+    }
+  }
+  return removed;
+}
+
 export function logRun(tab, values) {
   tab.appendRow(values.map(cell));
   tab.getRange(tab.getLastRow(), 1, 1, values.length).setWrap(true);
-}
-
-export function removeExpiredJobs(jobs, beforeCleanup, now) {
-  let removed = 0;
-  // Re-read each row so an Applied edit after the initial scan survives cleanup.
-  for (let i = beforeCleanup.length - 1; i >= 0; i--) {
-    const { rowNumber, row } = beforeCleanup[i];
-    const current = jobs.getRange(rowNumber, 1, 1, JOB_HEADERS.length).getValues()[0];
-    if (String(current[0]) !== String(row[0])) throw new Error(`${jobs.getName()}!A${rowNumber}: job changed during cleanup; retry refresh.`);
-    if (current[JOB_INDEX['Status']] === 'Applied' || !expiredRow(current, now)) continue;
-    jobs.deleteRows(rowNumber, 1);
-    removed++;
-  }
-  if (jobs.getMaxRows() < 2) jobs.insertRowsAfter(1, 1);
-  return removed;
-}
-
-export function removeExpiredApplications(tab, beforeCleanup, now) {
-  let removed = 0;
-  // Re-read each row so a status change away from Applied during the run survives cleanup.
-  for (let i = beforeCleanup.length - 1; i >= 0; i--) {
-    const { rowNumber, row } = beforeCleanup[i];
-    const current = tab.getRange(rowNumber, 1, 1, JOB_HEADERS.length).getValues()[0];
-    if (String(current[0]) !== String(row[0])) throw new Error(`${tab.getName()}!A${rowNumber}: job changed during cleanup; retry refresh.`);
-    if (!expiredApplication(current, now)) continue;
-    tab.deleteRows(rowNumber, 1);
-    removed++;
-  }
-  if (tab.getMaxRows() < 2) tab.insertRowsAfter(1, 1);
-  return removed;
-}
-
-export function saveJobs(jobs, existing, merged) {
-  const appendStart = jobs.getLastRow() + 1;
-  const needed = appendStart + merged.added - 1;
-  if (needed > jobs.getMaxRows()) {
-    jobs.insertRowsAfter(jobs.getMaxRows(), needed - jobs.getMaxRows());
-    formatJobs(jobs);
-    if (jobs.getFilter()) {
-      jobs.getFilter().remove();
-      jobs.getRange(1, 1, jobs.getMaxRows(), JOB_HEADERS.length).createFilter();
-    }
-  }
-  if (merged.rows.length) {
-    // Never write existing Status/Notes cells, even with stale snapshot data.
-    const byId = new Map(merged.rows.map(row => [String(row[0]), row]));
-    writeRecordColumns(jobs, existing, JOB_COLUMN['Job ID'], JOB_INDEX['Status'],
-      entry => byId.get(String(entry.row[0])).slice(0, JOB_INDEX['Status']).map(cell));
-    writeRecordColumns(jobs, existing, JOB_COLUMN['Availability'], JOB_HEADERS.length - JOB_INDEX['Availability'],
-      entry => byId.get(String(entry.row[0])).slice(JOB_INDEX['Availability'], JOB_HEADERS.length).map(cell));
-    if (merged.added)
-      jobs.getRange(appendStart, 1, merged.added, JOB_HEADERS.length)
-        .setValues(merged.rows.slice(existing.length).map(row => row.slice(0, JOB_HEADERS.length).map(cell)));
-    jobs.getRange(2, JOB_COLUMN['Match Score'], jobs.getLastRow() - 1, 1).setNumberFormat('0');
-    // Sort every used column, keeping tracking and custom columns attached to IDs.
-    jobs
-      .getRange(
-        2,
-        JOB_COLUMN['Job ID'],
-        jobs.getLastRow() - 1,
-        Math.max(JOB_HEADERS.length, jobs.getLastColumn()),
-      )
-      .sort([
-        { column: JOB_COLUMN['Match Score'], ascending: false },
-        { column: JOB_COLUMN['Posted Date Text'], ascending: false },
-        { column: JOB_COLUMN['Job ID'], ascending: false },
-      ]);
-    showOpenJobs(jobs);
-    SpreadsheetApp.flush();
-  }
 }
