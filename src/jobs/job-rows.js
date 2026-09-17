@@ -21,30 +21,6 @@ export function expiredRow(row, now) {
   return date !== null && now - date >= RETENTION_MS;
 }
 
-function transferTime(row) {
-  const lastSeen =
-    row[JOB_INDEX['Last Seen']] instanceof Date &&
-    Number.isFinite(row[JOB_INDEX['Last Seen']].getTime())
-      ? row[JOB_INDEX['Last Seen']].getTime()
-      : null;
-  const firstSeen =
-    row[JOB_INDEX['First Seen']] instanceof Date &&
-    Number.isFinite(row[JOB_INDEX['First Seen']].getTime())
-      ? row[JOB_INDEX['First Seen']].getTime()
-      : null;
-  // Last Seen is stamped at transfer, so it marks arrival in Applications.
-  // First Seen is a fallback for rows transferred before stamping existed.
-  return lastSeen ?? firstSeen;
-}
-
-// Stale applications: still Applied after 14 days in Applications. Other
-// outcomes (Interviewing, Accepted, Rejected, Withdrawn) are kept permanently.
-export function expiredApplication(row, now) {
-  if (row[JOB_INDEX['Status']] !== 'Applied') return false;
-  const date = transferTime(row);
-  return date !== null && now - date >= RETENTION_MS;
-}
-
 export function rowJob(row) {
   return {
     id: String(row[JOB_INDEX['Job ID']]),

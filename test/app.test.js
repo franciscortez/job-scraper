@@ -931,6 +931,12 @@ test('120 unseen jobs accumulate over capped runs and repeats make zero detail c
 
 test('date sorting keeps formulas and custom cells attached; bad dates and blanks go last', async t => {
   t.mock.method(console, 'log', () => {});
+  // Fixed, recent-relative "now" keeps these postings well inside the 14-day
+  // retention window regardless of when the suite actually runs.
+  const now = Math.floor(Date.now() / 1000) * 1000;
+  t.mock.method(Date, 'now', () => now);
+  const posted = timestamp => new Date(timestamp + 8 * 3600000).toISOString().slice(0, 19).replace('T', ' ');
+  const day = 24 * 3600000;
   configure();
   const jobs = book.tabs.get('Part Time');
   jobs.data[0][19] = 'Custom'; jobs.data[0][29] = 'Beyond initial grid'; jobs.maxColumns = 30;
@@ -940,8 +946,9 @@ test('date sorting keeps formulas and custom cells attached; bad dates and blank
     row[16] = score; row[19] = '=1+1'; row[29] = `Extra ${id}`;
     return row;
   };
-  jobs.data.push(makeRow('9', 'invalid', 99), makeRow('10', '2026-09-01 12:00:00', 100),
-    blankJobRow(), makeRow('2', '2026-09-02 08:00:00', 0), makeRow('11', '2026-09-02 08:00:00', 1), makeRow('1', '', 1000));
+  jobs.data.push(makeRow('9', 'invalid', 99), makeRow('10', posted(now - 2 * day), 100),
+    blankJobRow(), makeRow('2', posted(now - 2 * day + 20 * 3600000), 0),
+    makeRow('11', posted(now - 2 * day + 20 * 3600000), 1), makeRow('1', '', 1000));
   const expected = new Map(readJobRecords(jobs).map(({ row }) => [row[0], row]));
   UrlFetchApp.fetch = () => ({ getResponseCode: () => 200, getContentText: () => '<p>Displaying 0 out of 0 job</p>' });
   jobs.writes = [];
