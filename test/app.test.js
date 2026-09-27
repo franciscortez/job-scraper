@@ -1132,8 +1132,8 @@ test('September 11 posting expires September 25 at the same Manila time', async 
   tab.data.push(row);
   const tables = [{ type: 'Part Time', tab }]; const history = book.tabs.get('Expired IDs');
   const deadline = Date.parse('2026-09-25T08:00:00+08:00');
-  assert.equal(removeExpiredJobs(tables, history, deadline - 1), 0);
-  assert.equal(removeExpiredJobs(tables, history, deadline), 1);
+  assert.deepEqual(removeExpiredJobs(tables, history, deadline - 1), { expired: 0, closed: 0 });
+  assert.deepEqual(removeExpiredJobs(tables, history, deadline), { expired: 1, closed: 0 });
   assert.equal(tab.getLastRow(), 1);
   assert.deepEqual([...expiredIds(history)], ['11001']);
 });
@@ -1374,4 +1374,98 @@ test('coverage logs expose deferred candidates per search without claiming full 
   assert.equal(coverage.eligible,60); assert.equal(coverage.checked,50); assert.equal(coverage.deferred,10);
   const completed=logs.find(item=>item.event==='search.completed').details;
   assert.equal(completed.pages,1); assert.ok(completed.oldestPosted); assert.equal(completed.morePages,false);
+});
+
+const staleCheck = () => new Date(Date.now() - 25 * 3600000);
+function detailOverride(respond) {
+  const original = UrlFetchApp.fetch;
+  const details = [];
+  UrlFetchApp.fetch = (url, options) => {
+    const id = url.match(/-(\d+)$/)?.[1];
+    if (id) details.push(id);
+    const override = id && respond(id);
+    return override || original(url, options);
+  };
+  return details;
+}
+
+test('manual Closed status records the ID and the job never returns', () => {
+  configure(); runScraper();
+  const jobs = book.tabs.get('Part Time');
+  const id = String(jobs.data[1][0]); const keptId = jobs.data[2][0];
+  jobs.data[1][11] = 'Closed';
+  const result = runScraper();
+  assert.equal(result.closed, 1); assert.equal(result.removed, 0); assert.equal(result.added, 0);
+  assert.equal(readJobRecords(jobs).length, 1); assert.equal(jobs.data[1][0], keptId);
+  assert.deepEqual(book.tabs.get('Expired IDs').data.slice(1).map(row => String(row[0])), [id]);
+  assert.equal(book.tabs.get('Runs').data[1][9], 1);
+  assert.equal(book.tabs.get('Runs').data[0][9], 'Removed (closed)');
+  assert.equal(runScraper().added, 0);
+  assert.equal(readJobRecords(jobs).length, 1);
+});
+
+test('stale saved row that returns 410 is removed through Expired IDs in the same run', () => {
+  configure(); runScraper();
+  const jobs = book.tabs.get('Part Time');
+  const id = String(jobs.data[1][0]); const keptId = jobs.data[2][0];
+  jobs.data[1][14] = staleCheck();
+  const details = detailOverride(target => target === id ? { getResponseCode: () => 410, getContentText: () => '' } : null);
+  const result = runScraper();
+  assert.deepEqual(details, [id]);
+  assert.equal(result.closed, 1); assert.equal(result.outcome, 'Success');
+  assert.equal(readJobRecords(jobs).length, 1); assert.equal(jobs.data[1][0], keptId);
+  assert.ok(book.tabs.get('Expired IDs').data.some(row => String(row[0]) === id));
+});
+
+test('stale saved row showing a closed notice is removed', () => {
+  configure(); runScraper();
+  const jobs = book.tabs.get('Part Time');
+  const id = String(jobs.data[1][0]);
+  jobs.data[1][14] = staleCheck();
+  detailOverride(target => target === id ? { getResponseCode: () => 200, getContentText: () =>
+    `<h1 class="job__title" data-jobid="${id}">React Developer</h1><p class="text-warning">This job has been closed.</p><p id="job-description" data-jobid="${id}">React work.</p>` } : null);
+  assert.equal(runScraper().closed, 1);
+  assert.equal(readJobRecords(jobs).some(({ row }) => String(row[0]) === id), false);
+});
+
+test('open recheck writes only Availability and Last Checked', () => {
+  configure(); runScraper();
+  const jobs = book.tabs.get('Part Time');
+  jobs.data[1][11] = 'Saved'; jobs.data[1][12] = 'Keep note'; jobs.data[1][13] = 'Unknown'; jobs.data[1][14] = staleCheck();
+  const before = jobs.data[1].slice();
+  jobs.writes = [];
+  const result = runScraper();
+  assert.equal(result.closed, 0);
+  const after = readJobRecords(jobs).find(({ row }) => row[0] === before[0]).row;
+  assert.equal(after[13], 'Open'); assert.ok(after[14].getTime() > before[14].getTime());
+  after.forEach((value, index) => { if (index !== 13 && index !== 14) assert.deepEqual(value, before[index] ?? ''); });
+  assert.ok(jobs.writes.some(write => write.column === 14 && write.width === 2 && write.count === 1));
+});
+
+test('Interviewing, Closed-availability, and recently checked rows are never rechecked', () => {
+  configure(); runScraper();
+  const jobs = book.tabs.get('Part Time');
+  jobs.data[1][11] = 'Interviewing'; jobs.data[1][14] = staleCheck();
+  const details = detailOverride(() => ({ getResponseCode: () => 410, getContentText: () => '' }));
+  const result = runScraper();
+  assert.deepEqual(details, []); assert.equal(result.closed, 0);
+  assert.equal(readJobRecords(jobs).length, 2);
+});
+
+test('recheck is capped per run and rotates through the oldest checks', t => {
+  t.mock.method(console, 'log', () => {});
+  configure();
+  const ids = Array.from({ length: 15 }, (_, i) => String(i + 1));
+  const checked = mockDiscovery(ids);
+  assert.equal(runScraper().added, 15);
+  const jobs = book.tabs.get('Part Time');
+  jobs.data.slice(1).forEach(row => { row[14] = staleCheck(); });
+  checked.length = 0;
+  assert.equal(runScraper().closed, 0);
+  assert.equal(checked.length, 10);
+  assert.equal(runScraper().closed, 0);
+  assert.equal(checked.length, 15);
+  assert.equal(new Set(checked).size, 15);
+  runScraper();
+  assert.equal(checked.length, 15);
 });

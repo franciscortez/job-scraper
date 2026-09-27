@@ -1,5 +1,5 @@
 import { JOB_HEADERS, JOB_INDEX } from '../config/settings.js';
-import { expiredRow } from '../jobs/job-rows.js';
+import { expiredRow, closedRow } from '../jobs/job-rows.js';
 import { readJobTabs } from './job-tabs.js';
 import { sheet, rows } from './sheets.js';
 
@@ -33,14 +33,16 @@ export function expiredIds(tab) {
   return ids;
 }
 
-/** Record expired identity durably before deleting its discovery row. */
+/** Record expired or closed identity durably before deleting its discovery row. */
 export function removeExpiredJobs(tables, history, now, log = () => {}, budget = { check() {} }) {
   const known = expiredIds(history);
   const entries = readJobTabs(tables);
+  const eligible = row => row[JOB_INDEX['Status']] !== 'Applied' && (expiredRow(row, now) || closedRow(row));
   let removed = 0;
+  let closed = 0;
   try {
     // Reverse physical order preserves positions when rows are deleted.
-    for (const entry of entries.filter(entry => entry.row[JOB_INDEX['Status']] !== 'Applied' && expiredRow(entry.row, now)).reverse()) {
+    for (const entry of entries.filter(entry => eligible(entry.row)).reverse()) {
       budget.check('cleanup');
       const { tab, rowNumber } = entry;
       const readCurrent = () => {
@@ -49,7 +51,6 @@ export function removeExpiredJobs(tables, history, now, log = () => {}, budget =
           throw new Error(`${tab.getName()}!A${rowNumber}: job changed during cleanup; retry refresh.`);
         return row;
       };
-      const eligible = row => row[JOB_INDEX['Status']] !== 'Applied' && expiredRow(row, now);
       const current = readCurrent();
       if (!eligible(current)) continue;
       const id = String(current[0]);
@@ -64,15 +65,18 @@ export function removeExpiredJobs(tables, history, now, log = () => {}, budget =
         known.add(id);
       }
       // A user may mark Applied or edit the posting date while the ID is recorded.
-      if (!eligible(readCurrent())) continue;
+      const latest = readCurrent();
+      if (!eligible(latest)) continue;
       tab.deleteRows(rowNumber, 1);
-      removed++;
+      if (closedRow(latest)) closed++;
+      else removed++;
       if (tab.getMaxRows() < 2) tab.insertRowsAfter(1, 1);
     }
   } catch (error) {
     error.removed = removed;
+    error.closed = closed;
     throw error;
   }
-  log('cleanup.completed', { removed, expiredIds: known.size });
-  return removed;
+  log('cleanup.completed', { removed, closed, expiredIds: known.size });
+  return { expired: removed, closed };
 }

@@ -18,7 +18,7 @@ export function sheet(book, name, headers, create = false) {
   if (headers === JOB_HEADERS && create) restoreJobColumns(tab);
   const actual = tab.getRange(1, 1, 1, headers.length).getValues()[0];
   const legacyLength =
-    (headers === JOB_HEADERS ? [16, 13] : name === 'Runs' ? [8] : []).find(
+    (headers === JOB_HEADERS ? [16, 13] : name === 'Runs' ? [9, 8] : []).find(
       (length) =>
         actual.slice(0, length).every((header, index) => header === headers[index]) &&
         actual.slice(length).every((header) => header === ''),

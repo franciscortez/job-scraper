@@ -47,6 +47,9 @@ test('closed notices beat generic application links without misreading unrelated
   assert.equal(inspectJob(response(detail('', 'React Developer - NO LONGER AVAILABLE')), job).state, 'Closed');
   assert.equal(inspectJob(response(detail('This job is NOT closed. React work.')), job).state, 'Open');
   assert.equal(inspectJob(response(detail('Previous developer is no longer available.')), job).state, 'Open');
+  const paragraphNotice = detail().replace('</h1>', '</h1><p class="text-warning">This job has been closed.</p>');
+  assert.equal(inspectJob(response(paragraphNotice), job).state, 'Closed');
+  assert.equal(inspectJob(response(detail().replace('</h1>', '</h1><span>This job has been closed.</span>')), job).state, 'Closed');
   assert.equal(inspectJob({ status: 404 }, job).state, 'Closed');
   assert.equal(inspectJob({ status: 410 }, job).state, 'Closed');
   assert.throws(() => inspectJob(response('<title>Just a moment</title>'), job), /challenge/);
