@@ -21,6 +21,12 @@ export function expiredRow(row, now) {
   return date !== null && now - date >= RETENTION_MS;
 }
 
+/** Manual Closed always removes; a detected closure never removes an Applied row. */
+export function closedRow(row) {
+  return row[JOB_INDEX['Status']] === 'Closed' ||
+    (row[JOB_INDEX['Availability']] === 'Closed' && row[JOB_INDEX['Status']] !== 'Applied');
+}
+
 export function rowJob(row) {
   return {
     id: String(row[JOB_INDEX['Job ID']]),

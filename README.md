@@ -21,10 +21,11 @@ Every time it runs, it:
 4. Skips Job IDs already saved in any employment tab or Applications.
 5. Adds unseen open matches posted less than 14 days ago.
 6. Sorts each employment tab by posting date, newest first. Equal dates use descending Job ID; missing or invalid historical dates go last.
-7. Moves Applied jobs to Applications, then removes discovery jobs 14 days after their posting date.
-8. Writes a short report about what it did.
+7. Moves Applied jobs to Applications, then removes discovery jobs 14 days after their posting date and any job marked **Closed**.
+8. Rechecks up to 10 saved jobs not checked in the last 24 hours. A job that is gone (404/410) or shows a closed notice is removed.
+9. Writes a short report about what it did.
 
-Existing details, availability, Status, Notes, and custom cells are not refreshed. Sorting moves whole rows, keeping tracking and formulas attached. Applications stays in its existing order. Discovery jobs expire after 14 days, including their Status, Notes, and custom cells. Applications remains permanent. Cleanup happens on the next manual or hourly refresh after the deadline.
+Existing details, Status, Notes, and custom cells are not refreshed; the recheck writes only Availability and Last Checked. Sorting moves whole rows, keeping tracking and formulas attached. Applications stays in its existing order. Discovery jobs expire after 14 days, including their Status, Notes, and custom cells. Applications remains permanent. Cleanup happens on the next manual or hourly refresh after the deadline.
 
 ## The three pages in your spreadsheet
 
@@ -40,7 +41,7 @@ To use it daily:
 2. Use the **Job Tracker** menu at the top.
 3. Click **Run now** when you want fresh jobs.
 4. Read the employment-type tabs. The latest posting dates appear first.
-5. For jobs you like, use **Saved** and add **Notes**. After applying, choose **Applied**; the next hourly or manual refresh moves the row to **Applications** and stamps Last Seen as arrival time. All application statuses remain permanently, including Applied.
+5. For jobs you like, use **Saved** and add **Notes**. After applying, choose **Applied**; the next hourly or manual refresh moves the row to **Applications** and stamps Last Seen as arrival time. All application statuses remain permanently, including Applied. If a job page says **This job has been closed.**, choose **Closed**; the next refresh records its ID in **Expired IDs** and deletes the row, so it never comes back. Run **Setup** once after updating so the Closed option appears in the Status dropdown.
 6. Turn on **Enable hourly refresh** if you want it to check by itself. Turn it off with **Disable hourly refresh**.
 
 That is all most people need.
@@ -65,7 +66,7 @@ These are the rules the helper always follows.
 | Jobs it ignores | Social media, admin, and other non-developer jobs, even if they mention one of those tools by accident. |
 | Special words that do not count alone | n8n and GoHighLevel, including GHL, do not count as a skill match by themselves. A job mentioning them can still appear if it also needs one of your real skills, like React. |
 | Full time, part time, gig | All of them can appear: Full Time, Part Time, Gig, and Any. You can narrow this in the Searches page. |
-| What “Open” means | The public page had an application control and no closed message when added. Availability and Last Checked are historical; saved jobs are not rechecked. |
+| What “Open” means | The public page had an application control and no closed message when last checked. Up to 10 saved jobs are rechecked per run, each at most once every 24 hours; Applied, Interviewing, and Closed rows are skipped. The public (logged-out) page often still looks open after an employer closes a job, so mark those rows **Closed** yourself. |
 | How many jobs it checks per run | At most 50 unseen job pages per run, across all tabs. There is no 50-row storage limit. |
 | What “Limited” means | More unseen candidates remain than this run could check. Later runs can check them when they appear in the selected search pages. |
 | How old jobs can get | Discovery jobs expire 14 days after posting (September 11 becomes September 25 at the same time, Manila). Applications never expires. New additions need a valid posting date less than 14 days old. |
@@ -92,7 +93,7 @@ These are the rules the helper always follows.
 ## If something looks wrong
 
 1. Open the **Runs** page and read the line directly below the header (the newest run) from right to left: result, error, numbers.
-2. If a job seems missing, check Applications, the Removed count in Runs, and your filters. The first updated run removes the old automatic Open-only filter; it does not change stored availability or recover deleted rows.
+2. If a job seems missing, check Applications, the Removed (14 days old) and Removed (closed) counts in Runs, and your filters. The first updated run removes the old automatic Open-only filter; it does not change stored availability or recover deleted rows.
 3. If no new jobs appear, check the **Searches** page: at least one row needs to be turned on and have words in it.
 4. If the sheet says headers changed, put the header names back in the original order.
 5. If an ID error appears, use the tab and cell locations in Runs to find the affected records. Missing or invalid IDs on non-empty rows and duplicate IDs still stop refresh. Completely empty rows do not.
@@ -132,11 +133,11 @@ Applications uses 60-pixel data rows, clipped text, top alignment, wider text co
 
 ### Expired IDs
 
-The tracker records each expired Job ID in **Expired IDs** before deleting its discovery row. Keep this tab intact: it prevents old listings from returning, even if their source date changes. It stores only IDs, not job details or Notes.
+The tracker records each expired or closed Job ID in **Expired IDs** before deleting its discovery row. Keep this tab intact: it prevents old listings from returning, even if their source date changes. It stores only IDs, not job details or Notes.
 
 ### Reliable refresh and recovery
 
-A Limited result can mean work was deferred to a later run. Successfully copied applications, expired IDs, and appended jobs remain saved; a retry resumes from the sheet without clearing results. Existing job details are not rechecked.
+A Limited result can mean work was deferred to a later run. Successfully copied applications, expired IDs, and appended jobs remain saved; a retry resumes from the sheet without clearing results. Existing job details are not rewritten; the bounded recheck updates only Availability and Last Checked.
 
 The tracker records temporary sort columns before sorting. After an interruption, it removes only columns matching its recovery markers. If the columns were edited or ownership is unclear, refresh stops and preserves them for review.
 

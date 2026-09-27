@@ -24,6 +24,7 @@ import { applyProfile } from '../spreadsheet/profile.js';
 import { locked, createIo } from '../platform/runtime.js';
 import { collect } from './collection.js';
 import { verifyJobs } from './verification.js';
+import { recheckSavedJobs } from './recheck.js';
 export function runScraper(log = () => {}) {
   const book = spreadsheet();
   const runs = sheet(book, 'Runs', RUN_HEADERS);
@@ -37,7 +38,8 @@ export function runScraper(log = () => {}) {
       let skippedKnown = 0;
       let added = 0,
         updated = 0,
-        removed = 0;
+        removed = 0,
+        closed = 0;
       let outcome = 'Failed';
       let errorText = '';
       try {
@@ -49,7 +51,7 @@ export function runScraper(log = () => {}) {
         const applications = openApplications(book);
         moved = moveApplications(tables, applications, log, budget);
         budget.check('cleanup');
-        removed = removeExpiredJobs(tables, history, started.getTime(), log, budget);
+        ({ expired: removed, closed } = removeExpiredJobs(tables, history, started.getTime(), log, budget));
         for (const id of expiredIds(history)) excludedIds.add(id);
         const knownIds = new Set([
           ...excludedIds,
@@ -114,6 +116,21 @@ export function runScraper(log = () => {}) {
           added = merged.added;
           persistCursors(properties, verification, selection, result.stop, log);
           updated = merged.updated;
+          if (!result.stop) {
+            const recheck = recheckSavedJobs(tables, io, started.getTime(), budget);
+            result.errors.push(...recheck.errors);
+            if (recheck.closed) {
+              try {
+                const cleanup = removeExpiredJobs(tables, history, started.getTime(), log, budget);
+                removed += cleanup.expired;
+                closed += cleanup.closed;
+              } catch (error) {
+                error.removed = removed + (error.removed || 0);
+                error.closed = closed + (error.closed || 0);
+                throw error;
+              }
+            }
+          }
           outcome = scraperOutcome(result, verification);
           if (outcome !== 'Failed') {
             for (const { tab } of tables) sortJobsByDate(tab, budget, log);
@@ -126,6 +143,7 @@ export function runScraper(log = () => {}) {
         moved = error.moved ?? moved;
         added = error.added ?? added;
         removed = error.removed ?? removed;
+        closed = error.closed ?? closed;
         errorText = error.message;
         if (!error.deferred) log('scraper.failed', { error: errorText }, 'error');
       }
@@ -140,6 +158,7 @@ export function runScraper(log = () => {}) {
           added,
           updated,
           removed,
+          closed,
           moved,
           errors: errorText ? errorText.split('\n') : [],
         },
@@ -155,13 +174,14 @@ export function runScraper(log = () => {}) {
         outcome,
         errorText,
         removed,
+        closed,
       ]);
       book.toast(
-        `${outcome}: ${added} added, ${skippedKnown} already saved, ${moved} moved to Applications. ${removed} expired jobs removed; newest posts first. ${errorText ? 'See Runs for details.' : ''}`,
+        `${outcome}: ${added} added, ${skippedKnown} already saved, ${moved} moved to Applications. ${removed} expired and ${closed} closed jobs removed; newest posts first. ${errorText ? 'See Runs for details.' : ''}`,
         'Job Tracker',
         8,
       );
-      return { outcome, added, updated, removed, moved, error: errorText };
+      return { outcome, added, updated, removed, closed, moved, error: errorText };
     },
     () => {
       log('scraper.skipped', { reason: 'Another tracker operation is running.' }, 'warn');
@@ -188,6 +208,7 @@ export function runScraper(log = () => {}) {
         0,
         'Skipped',
         'Another tracker operation is running.',
+        0,
         0,
       ]);
       return { outcome: 'Skipped' };

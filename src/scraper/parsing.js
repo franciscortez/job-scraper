@@ -105,9 +105,17 @@ export function inspectJob(response, job) {
   const description = first(doc, (node) => node.attribs?.id === 'job-description');
   const closed =
     /\b(?:this (?:job|position|role|posting)(?: posting)? (?:is|has been) (?:closed|filled|expired)|(?:this |the )?(?:position|role|job) is no longer (?:available|accepting applications)|we (?:have )?(?:already )?filled (?:this|the) (?:position|role)|we are no longer (?:hiring|accepting applications))\b/i;
+  // Notices may sit in headings, paragraphs, or badges; the description is checked separately.
+  const insideDescription = (node) => {
+    for (let item = node; item; item = item.parent) if (item === description) return true;
+    return false;
+  };
   const noticeText = all(
     doc,
-    (node) => ['h1', 'h2', 'h3'].includes(node.name) || hasClass(node, 'alert'),
+    (node) =>
+      (['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'span', 'strong'].includes(node.name) ||
+        hasClass(node, 'alert')) &&
+      !insideDescription(node),
   )
     .map(value)
     .join(' ');

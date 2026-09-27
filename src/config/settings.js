@@ -31,9 +31,10 @@ export const RUN_HEADERS = [
   'Result',
   'Error',
   'Removed (14 days old)',
+  'Removed (closed)',
 ];
 export const APPLICATION_STATUSES = ['Applied', 'Interviewing', 'Accepted', 'Rejected', 'Withdrawn'];
-export const STATUSES = ['New', 'Saved', 'Applied', 'Interviewing', 'Rejected', 'Archived'];
+export const STATUSES = ['New', 'Saved', 'Applied', 'Interviewing', 'Rejected', 'Archived', 'Closed'];
 export const TYPES = ['All', 'Full Time', 'Part Time', 'Gig'];
 export const DEFAULT_SEARCHES = [
   'developer',
@@ -51,6 +52,9 @@ export const PREFERRED_SKILLS = ['Next.js', 'Codex', 'Claude Code', 'Supabase'];
 export const RETENTION_MS = 14 * 24 * 60 * 60 * 1000;
 export const RUN_LOG_RETENTION_MS = 24 * 60 * 60 * 1000;
 export const MAX_JOB_CHECKS_PER_RUN = 50;
+// Saved discovery rows get a bounded availability recheck once per interval.
+export const MAX_RECHECKS_PER_RUN = 10;
+export const RECHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
 export const RUN_BUDGET_MS = 180000;
 export const FINALIZE_RESERVE_MS = 15000;
