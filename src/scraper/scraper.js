@@ -19,6 +19,7 @@ import {
   sortJobsByDate,
   logRun,
   pruneRunLogs,
+  removeLegacyRunColumns,
 } from '../spreadsheet/sheets.js';
 import { applyProfile } from '../spreadsheet/profile.js';
 import { locked, createIo } from '../platform/runtime.js';
@@ -34,6 +35,7 @@ export function runScraper(log = () => {}) {
       const budget = createRunBudget(started.getTime());
       let result;
       let moved = 0;
+      let applicationConflicts = [];
       let checked = 0;
       let skippedKnown = 0;
       let added = 0,
@@ -43,15 +45,18 @@ export function runScraper(log = () => {}) {
       let outcome = 'Failed';
       let errorText = '';
       try {
+        removeLegacyRunColumns(runs);
         pruneRunLogs(runs, started.getTime());
         budget.check('initialization');
         const history = openExpiredJobs(book);
         const excludedIds = expiredIds(history);
         const tables = openJobTabs(book, JOB_TAB_TYPES, log);
         const applications = openApplications(book);
-        moved = moveApplications(tables, applications, log, budget);
+        ({ moved, conflicts: applicationConflicts } = moveApplications(tables, applications, log, budget));
+        const protectedIds = new Set(applicationConflicts.map(conflict => conflict.jobId));
+        for (const id of protectedIds) excludedIds.add(id);
         budget.check('cleanup');
-        ({ expired: removed, closed } = removeExpiredJobs(tables, history, started.getTime(), log, budget));
+        ({ expired: removed, closed } = removeExpiredJobs(tables, history, started.getTime(), log, budget, protectedIds));
         for (const id of expiredIds(history)) excludedIds.add(id);
         const knownIds = new Set([
           ...excludedIds,
@@ -117,11 +122,11 @@ export function runScraper(log = () => {}) {
           persistCursors(properties, verification, selection, result.stop, log);
           updated = merged.updated;
           if (!result.stop) {
-            const recheck = recheckSavedJobs(tables, io, started.getTime(), budget);
+            const recheck = recheckSavedJobs(tables, io, started.getTime(), budget, protectedIds);
             result.errors.push(...recheck.errors);
             if (recheck.closed) {
               try {
-                const cleanup = removeExpiredJobs(tables, history, started.getTime(), log, budget);
+                const cleanup = removeExpiredJobs(tables, history, started.getTime(), log, budget, protectedIds);
                 removed += cleanup.expired;
                 closed += cleanup.closed;
               } catch (error) {
@@ -141,11 +146,16 @@ export function runScraper(log = () => {}) {
         outcome = error.deferred ? 'Limited' : 'Failed';
         if (error.deferred) log('work.deferred', { stage: error.stage }, 'warn');
         moved = error.moved ?? moved;
+        applicationConflicts = error.conflicts ?? applicationConflicts;
         added = error.added ?? added;
         removed = error.removed ?? removed;
         closed = error.closed ?? closed;
         errorText = error.message;
         if (!error.deferred) log('scraper.failed', { error: errorText }, 'error');
+      }
+      if (applicationConflicts.length) {
+        if (outcome === 'Success' || outcome === 'Skipped') outcome = 'Partial';
+        errorText = [...applicationConflicts.map(conflict => conflict.message), errorText].filter(Boolean).join('\n');
       }
       log(
         'scraper.completed',
@@ -160,6 +170,7 @@ export function runScraper(log = () => {}) {
           removed,
           closed,
           moved,
+          conflicts: applicationConflicts.length,
           errors: errorText ? errorText.split('\n') : [],
         },
         outcome === 'Failed' ? 'error' : outcome === 'Success' ? 'info' : 'warn',
@@ -173,15 +184,13 @@ export function runScraper(log = () => {}) {
         updated,
         outcome,
         errorText,
-        removed,
-        closed,
       ]);
       book.toast(
-        `${outcome}: ${added} added, ${skippedKnown} already saved, ${moved} moved to Applications. ${removed} expired and ${closed} closed jobs removed; newest posts first. ${errorText ? 'See Runs for details.' : ''}`,
+        `${outcome}: ${added} added, ${skippedKnown} already saved, ${moved} moved to Applications, ${applicationConflicts.length} application conflicts. ${removed} expired and ${closed} closed jobs removed; newest posts first. ${errorText ? 'See Runs for details.' : ''}`,
         'Job Tracker',
         8,
       );
-      return { outcome, added, updated, removed, closed, moved, error: errorText };
+      return { outcome, added, updated, removed, closed, moved, conflicts: applicationConflicts.length, error: errorText };
     },
     () => {
       log('scraper.skipped', { reason: 'Another tracker operation is running.' }, 'warn');
@@ -195,6 +204,7 @@ export function runScraper(log = () => {}) {
           added: 0,
           updated: 0,
           removed: 0,
+          conflicts: 0,
           errors: ['Another tracker operation is running.'],
         },
         'warn',
@@ -208,10 +218,8 @@ export function runScraper(log = () => {}) {
         0,
         'Skipped',
         'Another tracker operation is running.',
-        0,
-        0,
       ]);
-      return { outcome: 'Skipped' };
+      return { outcome: 'Skipped', conflicts: 0 };
     },
   );
 }

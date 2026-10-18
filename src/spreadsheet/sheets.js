@@ -18,7 +18,7 @@ export function sheet(book, name, headers, create = false) {
   if (headers === JOB_HEADERS && create) restoreJobColumns(tab);
   const actual = tab.getRange(1, 1, 1, headers.length).getValues()[0];
   const legacyLength =
-    (headers === JOB_HEADERS ? [16, 13] : name === 'Runs' ? [9, 8] : []).find(
+    (headers === JOB_HEADERS ? [16, 13] : []).find(
       (length) =>
         actual.slice(0, length).every((header, index) => header === headers[index]) &&
         actual.slice(length).every((header) => header === ''),
@@ -142,6 +142,18 @@ function formatApplicationLayout(tab) {
 
 export function rows(tab, width) {
   return tab.getLastRow() > 1 ? tab.getRange(2, 1, tab.getLastRow() - 1, width).getValues() : [];
+}
+
+// Call under the tracker lock, after validating Runs headers. Delete only the
+// retired system columns; later custom columns and the first eight stay intact.
+export function removeLegacyRunColumns(tab) {
+  const count = Math.min(2, tab.getMaxColumns() - 8);
+  if (count <= 0) return;
+  const headers = tab.getRange(1, 9, 1, count).getValues()[0];
+  for (let index = headers.length - 1; index >= 0; index--) {
+    if (['Removed (14 days old)', 'Removed (closed)'].includes(headers[index]))
+      tab.deleteColumns(9 + index, 1);
+  }
 }
 
 // Call only while holding the scraper lock. Delete bottom-up so physical rows stay valid.

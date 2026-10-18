@@ -179,6 +179,35 @@ test('newest run is logged first below the header', () => {
   assert.equal(tab.data[2][0].getTime(), first);
 });
 
+for (const removedHeaders of [[], ['Removed (14 days old)'], ['Removed (14 days old)', 'Removed (closed)']]) {
+  test(`Runs removes ${removedHeaders.length} legacy removal columns while preserving history and custom data`, () => {
+    configure();
+    const tab = book.tabs.get('Runs');
+    const headers = tab.data[0].slice(0, 8);
+    const history = [new Date(), 12, 3, 4, 5, 6, 'Success', 'Keep this error'];
+    tab.data = [[...headers, ...removedHeaders, 'Custom'], [...history, ...removedHeaders.map(() => 2), 'Keep custom data']];
+    const columns = tab.getMaxColumns();
+    setup();
+    assert.deepEqual(tab.data, [[...headers, 'Custom'], [...history, 'Keep custom data']]);
+    assert.equal(tab.getMaxColumns(), columns - removedHeaders.length);
+    setup();
+    assert.deepEqual(tab.data, [[...headers, 'Custom'], [...history, 'Keep custom data']]);
+    held = true;
+    runScraper();
+    assert.equal(tab.data[1].length, 8);
+    assert.deepEqual(tab.data[2], [...history, 'Keep custom data']);
+  });
+}
+
+test('manual refresh removes legacy Runs removal columns without setup', () => {
+  configure();
+  const tab = book.tabs.get('Runs');
+  tab.data[0] = [...tab.data[0].slice(0, 8), 'Removed (14 days old)', 'Removed (closed)'];
+  runScraper();
+  assert.equal(tab.data[0].length, 8);
+  assert.equal(tab.data[1].length, 8);
+});
+
 test('setup and scraping work without a spreadsheet UI context', () => {
   globalThis.SpreadsheetApp.getUi = () => { throw new Error('Cannot call SpreadsheetApp.getUi() from this context.'); };
   configure();
@@ -291,7 +320,7 @@ test('expired discovery rows are removed even with searches disabled', () => {
   book.getSheetByName('Searches').data[1][0] = false;
   const result = runScraper();
   assert.equal(result.removed, 1); assert.equal(jobs.data.length, 2); assert.equal(jobs.data[1][0], keptId);
-  assert.equal(book.getSheetByName('Runs').data[1][8], 1);
+  assert.equal(book.getSheetByName('Runs').data[1].length, 8);
 });
 
 test('legacy headers migrate without losing notes', () => {
@@ -696,7 +725,7 @@ test('all application statuses stay permanently including stale Applied', async 
   const result = runScraper();
   assert.equal(result.removed, 0);
   assert.equal(apps.data.length, 2);
-  assert.equal(book.getSheetByName('Runs').data[1][8], 0);
+  assert.equal(book.getSheetByName('Runs').data[1].length, 8);
   const { APPLICATION_STATUSES } = await import('../src/config/settings.js');
   const kept = APPLICATION_STATUSES.filter(value => value !== 'Applied');
   kept.forEach((status, index) => {
@@ -1307,6 +1336,58 @@ test('application transfer preserves formulas instead of only computed values', 
   assert.ok(!trackedRows(jobs).has(id));
 });
 
+for (const sparse of [false, true]) {
+  test(`multiple Applied formula rows transfer from their current positions${sparse ? ' across gaps' : ''}`, t => {
+    t.mock.method(console, 'log', () => {});
+    configure(); runScraper();
+    const jobs = book.tabs.get('Part Time');
+    jobs.data[0][19] = 'Calculated';
+    const expected = jobs.data.slice(1).map((row, index) => {
+      row[11] = 'Applied'; row[12] = `Note ${index}`; row[19] = `=RC[-3]*${index + 2}`;
+      return { id: String(row[0]), note: row[12], formula: row[19] };
+    });
+    if (sparse) jobs.data.splice(2, 0, []);
+    const result = runScraper();
+    assert.equal(result.outcome, 'Success');
+    assert.equal(result.moved, 2);
+    for (const { id, note, formula } of expected) {
+      const { row } = readJobRecords(book.tabs.get('Applications')).find(entry => String(entry.row[0]) === id);
+      assert.equal(row[12], note);
+      assert.equal(row[19], formula);
+      assert.ok(!trackedRows(jobs).has(id));
+    }
+    assert.equal(runScraper().moved, 0);
+    assert.equal(readJobRecords(book.tabs.get('Applications')).length, 2);
+  });
+}
+
+test('multiple formula transfers resume after the second source deletion is interrupted', t => {
+  t.mock.method(console, 'log', () => {});
+  configure(); runScraper();
+  const jobs = book.tabs.get('Part Time'); jobs.data[0][19] = 'Calculated';
+  for (const [index, row] of jobs.data.entries()) {
+    if (index) { row[11] = 'Applied'; row[19] = `=RC[-3]*${index + 1}`; }
+  }
+  const expected = new Map(jobs.data.slice(1).map(row => [String(row[0]), row[19]]));
+  const remove = jobs.deleteRows;
+  let deletions = 0;
+  jobs.deleteRows = function (...args) {
+    if (++deletions === 2) throw new Error('Second deletion interrupted');
+    return remove.apply(this, args);
+  };
+  const interrupted = runScraper();
+  assert.equal(interrupted.outcome, 'Failed');
+  assert.equal(interrupted.moved, 1);
+  assert.match(interrupted.error, /Second deletion interrupted/);
+  jobs.deleteRows = remove;
+  const resumed = runScraper();
+  assert.equal(resumed.outcome, 'Success');
+  assert.equal(resumed.moved, 1);
+  const applications = readJobRecords(book.tabs.get('Applications'));
+  assert.equal(applications.length, 2);
+  for (const { row } of applications) assert.equal(row[19], expected.get(String(row[0])));
+});
+
 test('changed formula with identical result prevents source deletion', t => {
   t.mock.method(console, 'log', () => {});
   configure(); runScraper(); const jobs = book.tabs.get('Part Time');
@@ -1377,6 +1458,156 @@ test('coverage logs expose deferred candidates per search without claiming full 
 });
 
 const staleCheck = () => new Date(Date.now() - 25 * 3600000);
+
+function seedApplicationConflict(edit = row => { row[12] = 'Private destination note'; }) {
+  const jobs = book.tabs.get('Part Time');
+  const source = jobs.data[1];
+  source[11] = 'Applied'; source[12] = 'Private source note';
+  const destination = source.slice();
+  destination[10] = new Date();
+  edit(destination, source);
+  const apps = book.tabs.get('Applications'); apps.data.push(destination);
+  return { jobs, apps, id: String(source[0]), source: source.slice(), destination: destination.slice() };
+}
+
+for (const [kind, edit, column] of [
+  ['Notes', row => { row[12] = 'Private destination note'; }, 'Notes'],
+  ['Status', row => { row[11] = 'Interviewing'; }, 'Status'],
+  ['custom value', row => { row[19] = 'Private custom value'; }, 'Custom column 20'],
+  ['formula', (row, source) => { source[19] = '=1+1'; row[19] = '=2'; }, 'Custom column 20'],
+]) {
+  test(`application ${kind} conflict preserves both copies while other transfers and discovery continue`, t => {
+    const logs = []; t.mock.method(console, 'log', line => logs.push(JSON.parse(line)));
+    configure(); runScraper();
+    const state = seedApplicationConflict(edit);
+    const other = state.jobs.data[2]; other[11] = 'Applied';
+    const otherId = String(other[0]);
+    const checked = mockDiscovery([state.id, otherId, '88001']);
+    logs.length = 0;
+    const result = runScraper();
+    assert.equal(result.outcome, 'Partial');
+    assert.equal(result.conflicts, 1);
+    assert.equal(result.moved, 1); assert.equal(result.added, 1);
+    assert.deepEqual(checked, ['88001']);
+    assert.deepEqual(readJobRecords(state.jobs).find(entry => String(entry.row[0]) === state.id).row, state.source);
+    assert.deepEqual(readJobRecords(state.apps).find(entry => String(entry.row[0]) === state.id).row, state.destination);
+    assert.ok(trackedRows(state.apps).has(otherId));
+    assert.match(result.error, /Application conflict.*Part Time!A2.*Applications!A2/);
+    assert.ok(result.error.includes(column));
+    assert.ok(!result.error.includes('Private'));
+    const conflict = logs.find(item => item.event === 'applications.conflict').details;
+    assert.equal(conflict.jobId, state.id);
+    assert.deepEqual(conflict.source, { sheet: 'Part Time', row: 2 });
+    assert.deepEqual(conflict.destination, { sheet: 'Applications', row: 2 });
+    assert.ok(conflict.differences.includes(column));
+    assert.ok(!JSON.stringify(logs).includes('Private'));
+    assert.equal(logs.find(item => item.event === 'scraper.completed').details.conflicts, 1);
+    assert.equal(book.tabs.get('Runs').data[0].length, 8);
+    assert.equal(book.tabs.get('Runs').data[1][6], 'Partial');
+    assert.equal(book.tabs.get('Runs').data[1][7], result.error);
+  });
+}
+
+for (const status of ['Saved', 'Closed']) {
+  test(`non-Applied ${status} conflict is protected from expiry and closure cleanup`, t => {
+    t.mock.method(console, 'log', () => {});
+    configure(); runScraper();
+    const state = seedApplicationConflict((_row, source) => { source[11] = status; source[5] = '2020-01-01 00:00:00'; });
+    // Another expired ID must still be removed while this ID stays out of the ledger.
+    state.jobs.data[2][5] = '2020-01-01 00:00:00';
+    const otherId = String(state.jobs.data[2][0]);
+    const result = runScraper();
+    assert.equal(result.outcome, 'Partial'); assert.equal(result.conflicts, 1);
+    assert.equal(result.removed, 1); assert.equal(result.closed, 0);
+    assert.deepEqual(readJobRecords(state.jobs).find(entry => String(entry.row[0]) === state.id).row, state.source);
+    const ids = book.tabs.get('Expired IDs').data.slice(1).map(row => String(row[0]));
+    assert.deepEqual(ids, [otherId]);
+    assert.match(result.error, /source is not Applied/);
+  });
+}
+
+test('conflicted saved IDs are excluded from rechecks and the second cleanup pass', t => {
+  t.mock.method(console, 'log', () => {});
+  configure(); runScraper();
+  const state = seedApplicationConflict((_row, source) => { source[11] = 'Saved'; source[14] = staleCheck(); });
+  const other = state.jobs.data[2]; other[14] = staleCheck();
+  const otherId = String(other[0]);
+  const details = detailOverride(() => ({ getResponseCode: () => 410, getContentText: () => '' }));
+  onFetch = () => {
+    // Become cleanup-eligible only after the first pass has finished.
+    const row = state.jobs.data.find(row => String(row[0]) === state.id);
+    row[11] = 'Closed';
+  };
+  const result = runScraper();
+  assert.equal(result.outcome, 'Partial'); assert.equal(result.closed, 1);
+  assert.deepEqual(details, [otherId]);
+  const retained = readJobRecords(state.jobs).find(entry => String(entry.row[0]) === state.id).row;
+  assert.equal(retained[11], 'Closed'); assert.deepEqual(retained[14], state.source[14]);
+  assert.deepEqual(book.tabs.get('Expired IDs').data.slice(1).map(row => String(row[0])), [otherId]);
+});
+
+test('all application conflicts are reported and reconciliation restores a clean refresh', t => {
+  t.mock.method(console, 'log', () => {});
+  configure(); runScraper();
+  const state = seedApplicationConflict();
+  const second = state.jobs.data[2]; second[11] = 'Applied';
+  const copy = second.slice(); copy[11] = 'Interviewing'; state.apps.data.push(copy);
+  const result = runScraper();
+  assert.equal(result.outcome, 'Partial'); assert.equal(result.conflicts, 2);
+  assert.ok(result.error.includes(state.id)); assert.ok(result.error.includes(String(second[0])));
+  state.apps.data.slice(1).forEach(row => {
+    const source = state.jobs.data.find(item => item[0] === row[0]);
+    row[11] = source[11]; row[12] = source[12];
+  });
+  const resolved = runScraper();
+  assert.equal(resolved.outcome, 'Success'); assert.equal(resolved.conflicts, 0);
+  assert.equal(resolved.moved, 2); assert.equal(resolved.error, '');
+  assert.equal(readJobRecords(state.apps).length, 2);
+});
+
+test('application conflicts report Partial even when all searches are disabled', t => {
+  t.mock.method(console, 'log', () => {});
+  configure(); runScraper(); seedApplicationConflict();
+  book.tabs.get('Searches').data[1][0] = false;
+  const calls = fetches;
+  const result = runScraper();
+  assert.equal(result.outcome, 'Partial'); assert.equal(result.conflicts, 1);
+  assert.match(result.error, /No enabled searches/); assert.match(result.error, /Application conflict/);
+  assert.equal(fetches, calls);
+});
+
+for (const fatal of ['source failure', 'write failure', 'budget', 'later transfer failure']) {
+  test(`application conflict diagnostics survive ${fatal} without weakening the outcome`, t => {
+    t.mock.method(console, 'log', () => {});
+    configure(); runScraper(); const state = seedApplicationConflict();
+    let expected = 'Failed', error = /HTTP 403/;
+    if (fatal === 'source failure') {
+      UrlFetchApp.fetch = () => ({ getResponseCode: () => 403, getContentText: () => 'denied' });
+    } else if (fatal === 'write failure') {
+      mockDiscovery(['88001']);
+      const getRange = state.jobs.getRange;
+      state.jobs.getRange = function (...args) {
+        const range = getRange.apply(this, args);
+        if (args[0] > 1 && args[1] === 1 && args[3] >= 19) range.setValues = () => { throw new Error('Append write failed'); };
+        return range;
+      };
+      error = /Append write failed/;
+    } else if (fatal === 'budget') {
+      const now = Date.now(); let time = now;
+      t.mock.method(Date, 'now', () => time); onFetch = () => { time = now + 170000; };
+      expected = 'Limited'; error = /deferred/;
+    } else {
+      state.jobs.data[2][11] = 'Applied';
+      state.jobs.deleteRows = () => { throw new Error('Transfer delete failed'); };
+      error = /Transfer delete failed/;
+    }
+    const result = runScraper();
+    assert.equal(result.outcome, expected); assert.equal(result.conflicts, 1);
+    assert.match(result.error, /Application conflict/); assert.match(result.error, error);
+    assert.ok(trackedRows(state.jobs).has(state.id));
+  });
+}
+
 function detailOverride(respond) {
   const original = UrlFetchApp.fetch;
   const details = [];
@@ -1398,8 +1629,8 @@ test('manual Closed status records the ID and the job never returns', () => {
   assert.equal(result.closed, 1); assert.equal(result.removed, 0); assert.equal(result.added, 0);
   assert.equal(readJobRecords(jobs).length, 1); assert.equal(jobs.data[1][0], keptId);
   assert.deepEqual(book.tabs.get('Expired IDs').data.slice(1).map(row => String(row[0])), [id]);
-  assert.equal(book.tabs.get('Runs').data[1][9], 1);
-  assert.equal(book.tabs.get('Runs').data[0][9], 'Removed (closed)');
+  assert.equal(book.tabs.get('Runs').data[1].length, 8);
+  assert.equal(book.tabs.get('Runs').data[0].length, 8);
   assert.equal(runScraper().added, 0);
   assert.equal(readJobRecords(jobs).length, 1);
 });

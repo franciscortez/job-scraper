@@ -34,20 +34,41 @@ export function moveApplications(tables, destination, log = () => {}, budget = {
   // Single transfer timestamp per run: Last Seen in Applications marks arrival time.
   const transferredAt = new Date();
   let moved = 0;
-  for (const source of sources) {
-    const id = String(source.row[0]);
-    const applied = source.row[JOB_INDEX['Status']] === 'Applied';
-    if (!applied && !existing.has(id)) continue;
+  const conflicts = [];
+  for (const entry of sources) {
+    const id = String(entry.row[0]);
+    if (entry.row[JOB_INDEX['Status']] !== 'Applied' && !existing.has(id)) continue;
     try {
       budget.check('application transfers');
+      // Earlier transfers delete whole rows. Locate this ID again before reading
+      // formulas or copying so those operations use the current physical row.
+      const source = validateJobRecords(readJobRecords(entry.tab)).find(record => String(record.row[0]) === id);
+      if (!source) throw new Error(`Job ${id} changed before transfer. Retry refresh.`);
+      const applied = source.row[JOB_INDEX['Status']] === 'Applied';
+      if (!applied && !existing.has(id)) continue;
       const original = transferRecord(source);
       const destinationRow = source.row.slice();
       destinationRow[JOB_INDEX['Last Seen']] = transferredAt;
-      const priorRow = existing.get(id);
-      const priorEntry = priorRow ? validateJobRecords(readJobRecords(destination)).find(entry => String(entry.row[0]) === id) : null;
+      const priorEntry = validateJobRecords(readJobRecords(destination)).find(entry => String(entry.row[0]) === id);
       const prior = priorEntry ? transferRecord(priorEntry) : null;
-      if (!applied || (prior && !isResumableTransfer(prior, original)))
-        throw new Error(`Application conflict for job ${id}. Both rows retained.`);
+      if (!applied && !prior) continue;
+      if (prior && (!applied || !isResumableTransfer(prior, original))) {
+        const differences = [...new Set(transferDifferences(prior, original).map(item => item.column))];
+        const reason = !applied ? 'source is not Applied' : 'copies differ';
+        const sourceLocation = { sheet: source.tab.getName(), row: source.rowNumber };
+        const destinationLocation = { sheet: destination.getName(), row: priorEntry.rowNumber };
+        const conflict = {
+          jobId: id,
+          source: sourceLocation,
+          destination: destinationLocation,
+          reason,
+          differences,
+          message: `Application conflict for job ${id} at ${sourceLocation.sheet}!A${sourceLocation.row} and ${destinationLocation.sheet}!A${destinationLocation.row}: ${reason}${differences.length ? ` (${differences.join(', ')})` : ''}. Both rows retained; reconcile by Job ID.`,
+        };
+        conflicts.push(conflict);
+        log('applications.conflict', conflict, 'warn');
+        continue;
+      }
       if (!prior) {
         const headers = source.tab.getRange(1, 1, 1, source.row.length).getValues()[0];
         const targetRow = destination.getLastRow() + 1;
@@ -77,11 +98,12 @@ export function moveApplications(tables, destination, log = () => {}, budget = {
       log(error.deferred ? 'work.deferred' : 'applications.transfer_failed',
         { stage: 'application transfers', jobId: id, moved, error: error.message }, error.deferred ? 'warn' : 'error');
       error.moved = moved;
+      error.conflicts = conflicts;
       throw error;
     }
   }
-  log('applications.transferred', { moved });
-  return moved;
+  log('applications.transferred', { moved, conflicts: conflicts.length });
+  return { moved, conflicts };
 }
 
 // A retry after an interrupted delete finds the stamped copy (Last Seen =

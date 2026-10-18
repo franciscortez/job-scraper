@@ -34,10 +34,11 @@ export function expiredIds(tab) {
 }
 
 /** Record expired or closed identity durably before deleting its discovery row. */
-export function removeExpiredJobs(tables, history, now, log = () => {}, budget = { check() {} }) {
+export function removeExpiredJobs(tables, history, now, log = () => {}, budget = { check() {} }, protectedIds = new Set()) {
   const known = expiredIds(history);
   const entries = readJobTabs(tables);
-  const eligible = row => row[JOB_INDEX['Status']] !== 'Applied' && (expiredRow(row, now) || closedRow(row));
+  const eligible = row => !protectedIds.has(String(row[0])) &&
+    row[JOB_INDEX['Status']] !== 'Applied' && (expiredRow(row, now) || closedRow(row));
   let removed = 0;
   let closed = 0;
   try {

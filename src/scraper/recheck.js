@@ -18,12 +18,12 @@ const fetchable = row => {
 };
 
 /** Recheck a bounded slice of saved rows; only Availability and Last Checked are written. */
-export function recheckSavedJobs(tables, io, started, budget = { check() {} }) {
+export function recheckSavedJobs(tables, io, started, budget = { check() {} }, protectedIds = new Set()) {
   const now = io.now();
   const candidates = readJobTabs(tables)
     .filter(({ row }) => {
       const time = checkedTime(row[JOB_INDEX['Last Checked']]);
-      return !SKIPPED_STATUSES.includes(row[JOB_INDEX['Status']]) &&
+      return !protectedIds.has(String(row[0])) && !SKIPPED_STATUSES.includes(row[JOB_INDEX['Status']]) &&
         row[JOB_INDEX['Availability']] !== 'Closed' &&
         fetchable(row) &&
         (time === null || now - time >= RECHECK_INTERVAL_MS);

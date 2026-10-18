@@ -9,7 +9,7 @@ import {
   JOB_TAB_TYPES,
 } from '../config/settings.js';
 import { readSearches } from '../scraper/searches.js';
-import { spreadsheet, sheet, rows } from './sheets.js';
+import { spreadsheet, sheet, rows, removeLegacyRunColumns } from './sheets.js';
 import { applyProfile } from './profile.js';
 import { locked } from '../platform/runtime.js';
 export function setup(log = () => {}) {
@@ -24,6 +24,7 @@ export function setup(log = () => {}) {
       ['Runs', RUN_HEADERS],
     ]) {
       const tab = sheet(book, name, headers, true);
+      if (name === 'Runs') removeLegacyRunColumns(tab);
       tab.setFrozenRows(1);
       tab
         .getRange(1, 1, 1, headers.length)

@@ -30,8 +30,6 @@ export const RUN_HEADERS = [
   'Updated',
   'Result',
   'Error',
-  'Removed (14 days old)',
-  'Removed (closed)',
 ];
 export const APPLICATION_STATUSES = ['Applied', 'Interviewing', 'Accepted', 'Rejected', 'Withdrawn'];
 export const STATUSES = ['New', 'Saved', 'Applied', 'Interviewing', 'Rejected', 'Archived', 'Closed'];
